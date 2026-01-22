@@ -4,8 +4,8 @@ import (
 	"fmt"
 	"os"
 
-	"go-api-inst/config"
-	"go-api-inst/report"
+	"github.com/whatap/go-api-inst/config"
+	"github.com/whatap/go-api-inst/report"
 
 	"github.com/spf13/cobra"
 )

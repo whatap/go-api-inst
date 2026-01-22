@@ -10,9 +10,9 @@ import (
 	"regexp"
 	"strings"
 
-	"go-api-inst/ast"
-	"go-api-inst/ast/common"
-	"go-api-inst/config"
+	"github.com/whatap/go-api-inst/ast"
+	"github.com/whatap/go-api-inst/ast/common"
+	"github.com/whatap/go-api-inst/config"
 
 	"github.com/spf13/cobra"
 )

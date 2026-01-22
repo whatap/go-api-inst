@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"go-api-inst/ast/common"
+	"github.com/whatap/go-api-inst/ast/common"
 )
 
 func TestExtractVersion(t *testing.T) {

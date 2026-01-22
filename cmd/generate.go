@@ -6,7 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"go-api-inst/ast"
+	"github.com/whatap/go-api-inst/ast"
 
 	"github.com/spf13/cobra"
 )

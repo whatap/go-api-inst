@@ -6,7 +6,7 @@ package fmt
 import (
 	"strings"
 
-	"go-api-inst/ast/common"
+	"github.com/whatap/go-api-inst/ast/common"
 
 	"github.com/dave/dst"
 	"github.com/dave/dst/dstutil"

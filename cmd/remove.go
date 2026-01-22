@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"os"
 
-	"go-api-inst/ast"
+	"github.com/whatap/go-api-inst/ast"
 
 	"github.com/spf13/cobra"
 )

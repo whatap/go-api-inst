@@ -1,8 +1,8 @@
 package custom
 
 import (
-	"go-api-inst/ast/common"
-	"go-api-inst/config"
+	"github.com/whatap/go-api-inst/ast/common"
+	"github.com/whatap/go-api-inst/config"
 
 	"github.com/dave/dst"
 )

@@ -8,7 +8,7 @@ import (
 	"os"
 	"strings"
 
-	"go-api-inst/ast/common"
+	"github.com/whatap/go-api-inst/ast/common"
 
 	"github.com/dave/dst"
 	"golang.org/x/tools/go/packages"

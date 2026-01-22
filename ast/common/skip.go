@@ -6,7 +6,7 @@ import (
 	"strings"
 
 	"github.com/bmatcuk/doublestar/v4"
-	"go-api-inst/config"
+	"github.com/whatap/go-api-inst/config"
 )
 
 // ShouldSkipPath checks if a path should be skipped based on patterns and system paths

@@ -4,7 +4,7 @@ package nethttp
 import (
 	"go/token"
 
-	"go-api-inst/ast/common"
+	"github.com/whatap/go-api-inst/ast/common"
 
 	"github.com/dave/dst"
 )

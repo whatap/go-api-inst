@@ -7,8 +7,8 @@ import (
 	"path/filepath"
 	"strings"
 
-	"go-api-inst/ast/common"
-	"go-api-inst/report"
+	"github.com/whatap/go-api-inst/ast/common"
+	"github.com/whatap/go-api-inst/report"
 
 	"github.com/dave/dst"
 	"github.com/dave/dst/decorator"

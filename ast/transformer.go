@@ -1,37 +1,37 @@
 package ast
 
 import (
-	"go-api-inst/ast/common"
+	"github.com/whatap/go-api-inst/ast/common"
 
 	"github.com/dave/dst"
 
 	// Register transformer packages (execute init())
 	// Phase 2: Web frameworks
-	_ "go-api-inst/ast/packages/chi"
-	_ "go-api-inst/ast/packages/echo"
-	_ "go-api-inst/ast/packages/fasthttp"
-	_ "go-api-inst/ast/packages/fiber"
-	_ "go-api-inst/ast/packages/gin"
-	_ "go-api-inst/ast/packages/gorilla"
-	_ "go-api-inst/ast/packages/nethttp"
+	_ "github.com/whatap/go-api-inst/ast/packages/chi"
+	_ "github.com/whatap/go-api-inst/ast/packages/echo"
+	_ "github.com/whatap/go-api-inst/ast/packages/fasthttp"
+	_ "github.com/whatap/go-api-inst/ast/packages/fiber"
+	_ "github.com/whatap/go-api-inst/ast/packages/gin"
+	_ "github.com/whatap/go-api-inst/ast/packages/gorilla"
+	_ "github.com/whatap/go-api-inst/ast/packages/nethttp"
 	// Phase 3: Databases
-	_ "go-api-inst/ast/packages/gorm"
-	_ "go-api-inst/ast/packages/jinzhugorm"
-	_ "go-api-inst/ast/packages/sql"
-	_ "go-api-inst/ast/packages/sqlx"
+	_ "github.com/whatap/go-api-inst/ast/packages/gorm"
+	_ "github.com/whatap/go-api-inst/ast/packages/jinzhugorm"
+	_ "github.com/whatap/go-api-inst/ast/packages/sql"
+	_ "github.com/whatap/go-api-inst/ast/packages/sqlx"
 	// Phase 4: External services
-	_ "go-api-inst/ast/packages/aerospike"
-	_ "go-api-inst/ast/packages/goredis"
+	_ "github.com/whatap/go-api-inst/ast/packages/aerospike"
+	_ "github.com/whatap/go-api-inst/ast/packages/goredis"
 	// Phase 7: Log libraries
-	_ "go-api-inst/ast/packages/fmt"
-	_ "go-api-inst/ast/packages/log"
-	_ "go-api-inst/ast/packages/logrus"
-	_ "go-api-inst/ast/packages/zap"
-	_ "go-api-inst/ast/packages/grpc"
-	_ "go-api-inst/ast/packages/k8s"
-	_ "go-api-inst/ast/packages/mongo"
-	_ "go-api-inst/ast/packages/redigo"
-	_ "go-api-inst/ast/packages/sarama"
+	_ "github.com/whatap/go-api-inst/ast/packages/fmt"
+	_ "github.com/whatap/go-api-inst/ast/packages/log"
+	_ "github.com/whatap/go-api-inst/ast/packages/logrus"
+	_ "github.com/whatap/go-api-inst/ast/packages/zap"
+	_ "github.com/whatap/go-api-inst/ast/packages/grpc"
+	_ "github.com/whatap/go-api-inst/ast/packages/k8s"
+	_ "github.com/whatap/go-api-inst/ast/packages/mongo"
+	_ "github.com/whatap/go-api-inst/ast/packages/redigo"
+	_ "github.com/whatap/go-api-inst/ast/packages/sarama"
 )
 
 // Transformer is the per-package transformer interface

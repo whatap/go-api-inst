@@ -4,7 +4,7 @@ import (
 	"os"
 	"path/filepath"
 
-	"go-api-inst/config"
+	"github.com/whatap/go-api-inst/config"
 )
 
 // ApplyAddRules applies new file creation rules (excluding append mode)
