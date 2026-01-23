@@ -186,8 +186,6 @@ whatap-go-inst go --output ./instrumented build ./...
 | sqlx | `github.com/jmoiron/sqlx` | `whatapsqlx.Open()` | Supported |
 | GORM (gorm.io) | `gorm.io/gorm` | `whatapgorm.Open()` | Supported |
 | GORM (jinzhu) | `github.com/jinzhu/gorm` | `whatapgorm.Open()` | Supported |
-| Redigo | `github.com/gomodule/redigo` | `whatapredigo.Dial()` | Supported |
-| go-redis | `github.com/redis/go-redis/v9` | `whatapgoredis.NewClient()` | Supported |
 
 ### HTTP Client
 
@@ -208,14 +206,15 @@ whatap-go-inst go --output ./instrumented build ./...
 | gRPC | `google.golang.org/grpc` | Server/Client Interceptor | Supported |
 | Kubernetes | `k8s.io/client-go` | `config.Wrap()` | Supported |
 
-### NoSQL
+### NoSQL / Cache
 
 | Library | Import Path | Transformation | Status |
 |---------|-------------|----------------|--------|
 | MongoDB | `go.mongodb.org/mongo-driver/mongo` | `whatapmongo.Connect()` | Supported |
 | go-redis v9 | `github.com/redis/go-redis/v9` | `whatapgoredis.NewClient()` | Supported |
 | go-redis v8 | `github.com/go-redis/redis/v8` | `whatapgoredis.NewClient()` | Supported |
-| Aerospike v6/v8 | `github.com/aerospike/aerospike-client-go` | `sql.Wrap()` | Supported |
+| Redigo | `github.com/gomodule/redigo` | `whatapredigo.Dial()` | Supported |
+| Aerospike v6/v8 | `github.com/aerospike/aerospike-client-go` | `whatapsql.Wrap()` | Supported |
 
 ### Logging Libraries
 

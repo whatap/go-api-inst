@@ -509,9 +509,9 @@ whatap-go-inst version
 
 Output example:
 ```
-whatap-go-inst version 0.1.0
+whatap-go-inst version 0.5.0
   Git commit: abc1234
-  Build date: 2024-12-09T10:00:00Z
+  Build date: 2026-01-22T10:00:00Z
 ```
 
 ---
@@ -645,11 +645,12 @@ cd output && go get github.com/whatap/go-api@latest && go build .
 | **go-redis v8** | `github.com/go-redis/redis/v8` | `redis.NewClient()` -> `whatapgoredis.NewClient()` |
 | **Redigo** | `github.com/gomodule/redigo` | `redis.Dial()` -> `whatapredigo.Dial()` |
 
-### NoSQL
+### NoSQL / Cache
 
 | Library | Import Path | Transformation |
 |---------|-------------|----------------|
 | **MongoDB** | `go.mongodb.org/mongo-driver/mongo` | `mongo.Connect()` -> `whatapmongo.Connect()` |
+| **Aerospike** | `github.com/aerospike/aerospike-client-go` | Closure wrap with `whatapsql.Wrap()` |
 
 ### External Services
 
