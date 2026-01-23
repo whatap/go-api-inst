@@ -11,16 +11,18 @@ Automatically injects/removes `github.com/whatap/go-api` monitoring code, simila
 Download pre-built binaries from [GitHub Releases](https://github.com/whatap/go-api-inst/releases).
 
 ```bash
-# Example: Linux amd64 (replace VERSION with actual version, e.g., 0.4.6)
-VERSION=0.4.6
-curl -LO https://github.com/whatap/go-api-inst/releases/download/v${VERSION}/whatap-go-inst_${VERSION}_linux_amd64.tar.gz
-tar xzf whatap-go-inst_${VERSION}_linux_amd64.tar.gz
+# Example: Linux amd64
+VERSION=0.5.0
+curl -LO https://github.com/whatap/go-api-inst/releases/download/v${VERSION}/whatap-go-inst_linux_amd64.tar.gz
+tar xzf whatap-go-inst_linux_amd64.tar.gz
 sudo mv whatap-go-inst /usr/local/bin/
 ```
 
 Available binaries:
-- `whatap-go-inst_VERSION_linux_amd64.tar.gz`
-- `whatap-go-inst_VERSION_linux_arm64.tar.gz`
+- `whatap-go-inst_linux_amd64.tar.gz` - Linux x86_64
+- `whatap-go-inst_linux_arm64.tar.gz` - Linux ARM64
+- `goinst_linux_amd64.tar.gz` - Short alias (optional)
+- `goinst_linux_arm64.tar.gz` - Short alias (optional)
 
 ### Option 2: Go Install
 
@@ -82,13 +84,17 @@ Use with `go generate`. Source code is directly modified.
 # 1. Add go:generate directive
 whatap-go-inst init
 
-# 2. Generate code (inject monitoring code)
+# 2. Add dependencies (required!)
+go get github.com/whatap/go-api@latest
+go mod tidy
+
+# 3. Generate code (inject monitoring code)
 go generate ./...
 
-# 3. Build
+# 4. Build
 go build ./...
 
-# 4. (Optional) Remove directive
+# 5. (Optional) Remove directive
 whatap-go-inst uninit
 ```
 
@@ -174,7 +180,7 @@ mux.Handle("/api", whataphttp.Handler(h))      // Auto-wrapped
 | gRPC/Kafka instrumentation | Done | Interceptor-based |
 | Code removal | Done | Original restored after inject→remove |
 | Log library instrumentation | Done | log, logrus, zap |
-| Transformer pattern | Done | 20 package-specific transformers (ast/packages/) |
+| Transformer pattern | Done | 22 package-specific transformers (ast/packages/) |
 | Custom instrumentation | Done | inject, replace, hook, add, transform rules |
 
 ## Supported Frameworks
@@ -210,6 +216,7 @@ mux.Handle("/api", whataphttp.Handler(h))      // Auto-wrapped
 - `k8s.io/client-go/kubernetes`
 
 ### Log Libraries
+- `fmt` (standard library, Print/Printf/Println)
 - `log` (standard library)
 - `github.com/sirupsen/logrus`
 - `go.uber.org/zap`
