@@ -331,6 +331,7 @@ go get github.com/whatap/go-api@latest
 1. **Use fast mode** (recommended)
    ```bash
    whatap-go-inst init
+   go get github.com/whatap/go-api@latest && go mod tidy
    whatap-go-inst go build ./...
    ```
 

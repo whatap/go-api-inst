@@ -45,10 +45,14 @@ go build -o whatap-go-inst .
 The simplest method. Just prefix your `go` commands with `whatap-go-inst`.
 
 ```bash
-# Initialize (once, in go.mod directory)
+# 1. Initialize (once, in go.mod directory)
 whatap-go-inst init
 
-# Build
+# 2. Add dependencies (required!)
+go get github.com/whatap/go-api@latest
+go mod tidy
+
+# 3. Build
 whatap-go-inst go build ./...
 whatap-go-inst go build -o myapp .
 
@@ -109,6 +113,47 @@ whatap-go-inst inject --src ./myapp --output ./instrumented
 # Remove monitoring code
 whatap-go-inst remove --src ./instrumented --output ./clean
 ```
+
+### Docker Example
+
+Download the binary from GitHub Releases for Docker builds.
+
+```dockerfile
+# Stage 1: Build with instrumentation
+FROM golang:1.21-alpine AS builder
+
+# Install whatap-go-inst
+ARG INST_VERSION=0.5.0
+RUN wget -qO- https://github.com/whatap/go-api-inst/releases/download/v${INST_VERSION}/whatap-go-inst_linux_amd64.tar.gz | tar xz -C /usr/local/bin/
+
+WORKDIR /app
+COPY . .
+
+# Build with instrumentation
+RUN whatap-go-inst init && \
+    go get github.com/whatap/go-api@latest && \
+    go mod tidy && \
+    whatap-go-inst go build -o /app/server .
+
+# Stage 2: Run with WhaTap agent
+FROM alpine:latest
+
+# Install WhaTap agent
+RUN wget -qO- https://s3.ap-northeast-2.amazonaws.com/repo.whatap.io/alpine/x86_64/whatap-agent.tar.gz | tar xz -C /
+
+WORKDIR /app
+COPY --from=builder /app/server .
+
+# Create WhaTap config file
+RUN echo "license=your-license-key" > whatap.conf && \
+    echo "whatap.server.host=13.124.11.223" >> whatap.conf && \
+    echo "app_name=myapp" >> whatap.conf
+
+EXPOSE 8080
+CMD ["/bin/sh", "-c", "/usr/whatap/agent/whatap-agent start && ./server"]
+```
+
+> **Note**: Get `license` and `whatap.server.host` from [WhaTap Console](https://service.whatap.io) after creating a project.
 
 ## Commands
 
