@@ -45,15 +45,17 @@ func (t *Transformer) WhatapImportForFile(file *dst.File) string {
 func (t *Transformer) isV8(file *dst.File) bool {
 	for _, imp := range file.Imports {
 		path := strings.Trim(imp.Path.Value, `"`)
-		// github.com/go-redis/redis/v8 (old path)
-		if strings.HasPrefix(path, "github.com/go-redis/redis") {
+		// github.com/go-redis/redis/v8 (old path, v8 only)
+		// Note: v7 and earlier are not supported
+		if strings.HasPrefix(path, "github.com/go-redis/redis/v8") {
 			return true
 		}
 	}
 	return false
 }
 
-// Detect checks if the file uses go-redis (both v8 and v9 paths).
+// Detect checks if the file uses go-redis (v8 or v9 only).
+// Note: v7 and earlier are not supported by whatapgoredis.
 func (t *Transformer) Detect(file *dst.File) bool {
 	for _, imp := range file.Imports {
 		path := strings.Trim(imp.Path.Value, `"`)
@@ -61,8 +63,8 @@ func (t *Transformer) Detect(file *dst.File) bool {
 		if strings.HasPrefix(path, "github.com/redis/go-redis") {
 			return true
 		}
-		// github.com/go-redis/redis/v8 (old path)
-		if strings.HasPrefix(path, "github.com/go-redis/redis") {
+		// github.com/go-redis/redis/v8 (old path, v8 only)
+		if strings.HasPrefix(path, "github.com/go-redis/redis/v8") {
 			return true
 		}
 	}

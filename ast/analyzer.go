@@ -238,14 +238,12 @@ func detectFramework(importPath string) *Framework {
 		}
 	}
 
-	// Detect github.com/go-redis/redis (old path)
-	if strings.HasPrefix(importPath, "github.com/go-redis/redis") {
-		remaining := strings.TrimPrefix(importPath, "github.com/go-redis/redis")
-		if remaining == "" || isVersionSuffix(remaining) {
-			return &Framework{
-				Name:       "goredis",
-				ImportPath: importPath,
-			}
+	// Detect github.com/go-redis/redis/v8 (old path, v8 only)
+	// Note: v7 and earlier are not supported by whatapgoredis
+	if strings.HasPrefix(importPath, "github.com/go-redis/redis/v8") {
+		return &Framework{
+			Name:       "goredis",
+			ImportPath: importPath,
 		}
 	}
 

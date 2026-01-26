@@ -82,6 +82,7 @@ func (t *Transformer) Inject(file *dst.File) (bool, error) {
 func (t *Transformer) Remove(file *dst.File) error {
 	t.removeHandlerWrappers(file)
 	t.removeClientWrappers(file)
+	t.removePackageLevelClients(file) // §80 fix: package-level http.Client{}
 	return nil
 }
 
@@ -293,6 +294,102 @@ func (t *Transformer) injectClients(file *dst.File, pkgName string) {
 		// Process HTTP calls and http.Client{} in the function
 		processFunc(fn.Body, handlerCtx)
 	}
+
+	// Process package-level http.Client{} declarations (§80 fix)
+	// For package-level clients, use nil context (WrapRoundTrip will use req.Context())
+	t.injectPackageLevelClients(file, pkgName)
+}
+
+// injectPackageLevelClients wraps package-level http.Client{} declarations (§80 fix).
+// These are GenDecl (not FuncDecl), so they need special handling.
+// Uses nil context since handler context is not available at package level.
+// WrapRoundTrip will use req.Context() at request time.
+func (t *Transformer) injectPackageLevelClients(file *dst.File, pkgName string) {
+	for _, decl := range file.Decls {
+		genDecl, ok := decl.(*dst.GenDecl)
+		if !ok || genDecl.Tok != token.VAR {
+			continue
+		}
+
+		for _, spec := range genDecl.Specs {
+			valueSpec, ok := spec.(*dst.ValueSpec)
+			if !ok {
+				continue
+			}
+
+			for i, value := range valueSpec.Values {
+				// Handle &http.Client{} or http.Client{}
+				var compositeLit *dst.CompositeLit
+				if unary, ok := value.(*dst.UnaryExpr); ok && unary.Op == token.AND {
+					if cl, ok := unary.X.(*dst.CompositeLit); ok {
+						compositeLit = cl
+					}
+				} else if cl, ok := value.(*dst.CompositeLit); ok {
+					compositeLit = cl
+				}
+
+				if compositeLit == nil {
+					continue
+				}
+
+				// Check if it's http.Client
+				sel, ok := compositeLit.Type.(*dst.SelectorExpr)
+				if !ok {
+					continue
+				}
+				ident, ok := sel.X.(*dst.Ident)
+				if !ok || ident.Name != pkgName || sel.Sel.Name != "Client" {
+					continue
+				}
+
+				// Skip if already wrapped
+				if isHttpClientAlreadyWrapped(compositeLit) {
+					continue
+				}
+
+				// Wrap Transport with nil context (will use req.Context() at request time)
+				transportFound := false
+				for _, elt := range compositeLit.Elts {
+					if kv, ok := elt.(*dst.KeyValueExpr); ok {
+						if keyIdent, ok := kv.Key.(*dst.Ident); ok && keyIdent.Name == "Transport" {
+							kv.Value = &dst.CallExpr{
+								Fun: &dst.SelectorExpr{
+									X:   dst.NewIdent("whataphttp"),
+									Sel: dst.NewIdent("NewRoundTrip"),
+								},
+								Args: []dst.Expr{
+									dst.NewIdent("nil"),
+									dst.Clone(kv.Value).(dst.Expr),
+								},
+							}
+							transportFound = true
+							t.transformed = true
+							break
+						}
+					}
+				}
+				if !transportFound {
+					newKV := &dst.KeyValueExpr{
+						Key: dst.NewIdent("Transport"),
+						Value: &dst.CallExpr{
+							Fun: &dst.SelectorExpr{
+								X:   dst.NewIdent("whataphttp"),
+								Sel: dst.NewIdent("NewRoundTripWithEmptyTransport"),
+							},
+							Args: []dst.Expr{
+								dst.NewIdent("nil"),
+							},
+						},
+					}
+					compositeLit.Elts = append(compositeLit.Elts, newKV)
+					t.transformed = true
+				}
+
+				// Update the value in case we modified it
+				valueSpec.Values[i] = value
+			}
+		}
+	}
 }
 
 // isHttpClientAlreadyWrapped checks if http.Client's Transport is already wrapped with whataphttp
@@ -451,6 +548,74 @@ func (t *Transformer) restoreHttpCall(call *dst.CallExpr) {
 	}
 }
 
+// removePackageLevelClients removes whataphttp Transport from package-level http.Client{} declarations (§80 fix).
+func (t *Transformer) removePackageLevelClients(file *dst.File) {
+	for _, decl := range file.Decls {
+		genDecl, ok := decl.(*dst.GenDecl)
+		if !ok || genDecl.Tok != token.VAR {
+			continue
+		}
+
+		for _, spec := range genDecl.Specs {
+			valueSpec, ok := spec.(*dst.ValueSpec)
+			if !ok {
+				continue
+			}
+
+			for _, value := range valueSpec.Values {
+				// Handle &http.Client{} or http.Client{}
+				var compositeLit *dst.CompositeLit
+				if unary, ok := value.(*dst.UnaryExpr); ok && unary.Op == token.AND {
+					if cl, ok := unary.X.(*dst.CompositeLit); ok {
+						compositeLit = cl
+					}
+				} else if cl, ok := value.(*dst.CompositeLit); ok {
+					compositeLit = cl
+				}
+
+				if compositeLit != nil {
+					// Check type to handle any http.Client{} (not just "http" package name)
+					if sel, ok := compositeLit.Type.(*dst.SelectorExpr); ok {
+						if sel.Sel.Name == "Client" {
+							t.removeTransportFieldAnyPkgName(compositeLit)
+						}
+					}
+				}
+			}
+		}
+	}
+}
+
+// removeTransportFieldAnyPkgName removes whataphttp Transport regardless of package name.
+// Used for package-level declarations where the http package might have various aliases.
+func (t *Transformer) removeTransportFieldAnyPkgName(compositeLit *dst.CompositeLit) {
+	var newElts []dst.Expr
+	for _, elt := range compositeLit.Elts {
+		if kv, ok := elt.(*dst.KeyValueExpr); ok {
+			if key, ok := kv.Key.(*dst.Ident); ok && key.Name == "Transport" {
+				if call, ok := kv.Value.(*dst.CallExpr); ok {
+					if callSel, ok := call.Fun.(*dst.SelectorExpr); ok {
+						if callIdent, ok := callSel.X.(*dst.Ident); ok && callIdent.Name == "whataphttp" {
+							// NewRoundTripWithEmptyTransport → remove field entirely
+							if callSel.Sel.Name == "NewRoundTripWithEmptyTransport" {
+								continue
+							}
+							// NewRoundTrip(ctx, originalTransport) → restore originalTransport
+							if callSel.Sel.Name == "NewRoundTrip" && len(call.Args) >= 2 {
+								kv.Value = dst.Clone(call.Args[1]).(dst.Expr)
+								newElts = append(newElts, elt)
+								continue
+							}
+						}
+					}
+				}
+			}
+		}
+		newElts = append(newElts, elt)
+	}
+	compositeLit.Elts = newElts
+}
+
 // removeTransportField removes/restores whataphttp Transport from http.Client{}.
 // - NewRoundTripWithEmptyTransport(ctx) → remove Transport field entirely
 // - NewRoundTrip(ctx, originalTransport) → restore to Transport: originalTransport
@@ -576,6 +741,49 @@ func hasHttpClientCalls(file *dst.File, pkgName string) bool {
 	}
 
 	found := false
+
+	// Check package-level http.Client{} declarations (§80 fix)
+	for _, decl := range file.Decls {
+		if found {
+			break
+		}
+		genDecl, ok := decl.(*dst.GenDecl)
+		if !ok || genDecl.Tok != token.VAR {
+			continue
+		}
+		for _, spec := range genDecl.Specs {
+			valueSpec, ok := spec.(*dst.ValueSpec)
+			if !ok {
+				continue
+			}
+			for _, value := range valueSpec.Values {
+				var compositeLit *dst.CompositeLit
+				if unary, ok := value.(*dst.UnaryExpr); ok && unary.Op == token.AND {
+					if cl, ok := unary.X.(*dst.CompositeLit); ok {
+						compositeLit = cl
+					}
+				} else if cl, ok := value.(*dst.CompositeLit); ok {
+					compositeLit = cl
+				}
+				if compositeLit != nil {
+					if sel, ok := compositeLit.Type.(*dst.SelectorExpr); ok {
+						if ident, ok := sel.X.(*dst.Ident); ok {
+							if ident.Name == pkgName && sel.Sel.Name == "Client" {
+								found = true
+								break
+							}
+						}
+					}
+				}
+			}
+		}
+	}
+
+	if found {
+		return true
+	}
+
+	// Check function bodies
 	for _, decl := range file.Decls {
 		fn, ok := decl.(*dst.FuncDecl)
 		if !ok || fn.Body == nil {
