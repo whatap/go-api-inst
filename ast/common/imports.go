@@ -271,17 +271,10 @@ func GetPackageNameForImportPrefix(file *dst.File, importPrefix string) string {
 			if imp.Name != nil {
 				return imp.Name.Name
 			}
-			// Return default package name (last segment before version or end)
+			// Use getDefaultPackageName which handles version suffixes and go- prefixes
+			// e.g., github.com/redis/go-redis/v9 -> redis (not go-redis)
 			// e.g., github.com/labstack/echo/v4 -> echo
-			parts := strings.Split(path, "/")
-			for i := len(parts) - 1; i >= 0; i-- {
-				// Skip version suffixes like v2, v4, v5
-				if len(parts[i]) >= 2 && parts[i][0] == 'v' && parts[i][1] >= '0' && parts[i][1] <= '9' {
-					continue
-				}
-				return parts[i]
-			}
-			return parts[len(parts)-1]
+			return getDefaultPackageName(path)
 		}
 	}
 	return ""

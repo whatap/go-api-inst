@@ -10,13 +10,19 @@ Explains how to define custom instrumentation rules using YAML configuration fil
 
 go-api-inst automatically instruments major libraries such as Gin, Echo, and database/sql. Additionally, users can define custom instrumentation rules:
 
-| Rule | Purpose | Example |
-|------|---------|---------|
-| `inject` | Insert code at function start/end | Logging, metrics |
-| `replace` | Replace function calls | sql.Open → whatapsql.Open |
-| `hook` | Insert code before/after function calls | Tracing, debugging |
-| `add` | Create new files | Helper code |
-| `transform` | Template-based transformation | Complex transformations |
+| Rule | Purpose | Target |
+|------|---------|--------|
+| `add` | Create new files/functions | Package |
+| `inject` | Insert code into function **definitions** | Function definition |
+| `replace` | Replace function **calls** | Function call |
+| `hook` | Insert code before/after function **calls** | Function call |
+| `transform` | Pattern → template transformation (flexible) | Any code |
+
+### Execution Order
+
+```
+add → inject → replace → hook → transform (sequential)
+```
 
 ---
 
@@ -239,11 +245,71 @@ custom:
 
 ### Template Variables
 
-| Variable | Description |
-|----------|-------------|
-| `{{.Original}}` | Original call code |
-| `{{.FuncName}}` | Function name |
-| `{{.Args}}` | Argument list |
+| Variable | Description | Example |
+|----------|-------------|---------|
+| `{{.Original}}` | Matched original code | `gin.Default()` |
+| `{{.Var}}` | Assigned variable name | `r` (from `r := ...`) |
+| `{{.Args}}` | All function arguments | `policy, hosts...` |
+| `{{.Arg0}}`, `{{.Arg1}}` | Individual arguments | First, second argument |
+| `{{.FuncName}}` | Function name | `Default` |
+| `{{.PkgName}}` | Package name | `gin` |
+
+### Transform Examples
+
+#### Example 1: Add Middleware
+
+```yaml
+custom:
+  transform:
+    - package: "github.com/gin-gonic/gin"
+      function: "Default"
+      template: |
+        {{.Original}}
+        {{.Var}}.Use(whatapgin.Middleware())
+      imports:
+        - "github.com/whatap/go-api/instrumentation/github.com/gin-gonic/gin/whatapgin"
+```
+
+Result:
+```go
+// Before
+r := gin.Default()
+
+// After
+r := gin.Default()
+r.Use(whatapgin.Middleware())
+```
+
+#### Example 2: Wrap with Closure (Aerospike)
+
+```yaml
+custom:
+  transform:
+    - package: "github.com/aerospike/aerospike-client-go"
+      function: "NewClient"
+      template: |
+        func() (*as.Client, error) {
+            ctx, done := whatapsql.Start(context.Background(), "aerospike")
+            defer done()
+            return {{.Original}}
+        }()
+      imports:
+        - "context"
+        - "github.com/whatap/go-api/instrumentation/database/sql/whatapsql"
+```
+
+Result:
+```go
+// Before
+client, err := as.NewClient(policy, hosts...)
+
+// After
+client, err := func() (*as.Client, error) {
+    ctx, done := whatapsql.Start(context.Background(), "aerospike")
+    defer done()
+    return as.NewClient(policy, hosts...)
+}()
+```
 
 ---
 
@@ -386,6 +452,128 @@ WHATAP_INST_CONFIG=custom.yaml whatap-go-inst inject -s . -o ./output
 
 # Verbose output
 whatap-go-inst inject -s . -o ./output -v
+```
+
+---
+
+## Real-World Examples
+
+### Example 1: Internal Library Instrumentation
+
+Add monitoring to internal shared libraries:
+
+```yaml
+# .whatap/config.yaml
+custom:
+  # Add tracing to all service functions
+  inject:
+    - package: "mycompany/service"
+      function: "*"
+      start: |
+        ctx, span := trace.Start(ctx, "service")
+        defer span.End()
+      imports:
+        - "github.com/whatap/go-api/trace"
+
+  # Replace internal DB library
+  replace:
+    - package: "mycompany/db"
+      function: "Connect"
+      with: "whatapsql.Open"
+      imports:
+        - "github.com/whatap/go-api/instrumentation/database/sql/whatapsql"
+```
+
+### Example 2: Legacy Code Instrumentation
+
+Add monitoring to legacy code that's difficult to modify directly:
+
+```yaml
+custom:
+  # Add tracing to legacy HTTP client calls
+  hook:
+    - package: "legacy/httpclient"
+      function: "Do"
+      before: |
+        ctx, span := httpc.Start(ctx, req.URL.String())
+      after: |
+        span.End()
+      imports:
+        - "github.com/whatap/go-api/httpc"
+
+  # Log legacy cache calls
+  hook:
+    - package: "legacy/cache"
+      function: "Get"
+      before: |
+        startTime := time.Now()
+      after: |
+        trace.Step(ctx, "cache.Get", time.Since(startTime).Milliseconds(), nil)
+      imports:
+        - "time"
+        - "github.com/whatap/go-api/trace"
+```
+
+### Example 3: Custom Middleware
+
+Automatically add custom middleware:
+
+```yaml
+custom:
+  # Create helper middleware
+  add:
+    - package: "myapp/middleware"
+      file: "whatap_middleware.go"
+      content: |
+        package middleware
+
+        import (
+            "github.com/gin-gonic/gin"
+            "github.com/whatap/go-api/trace"
+        )
+
+        func CustomTracing() gin.HandlerFunc {
+            return func(c *gin.Context) {
+                ctx := trace.Start(c.Request.Context(), c.Request.URL.Path)
+                c.Request = c.Request.WithContext(ctx)
+                defer trace.End(ctx, nil)
+                c.Next()
+            }
+        }
+
+  # Add custom middleware to Gin router
+  transform:
+    - package: "github.com/gin-gonic/gin"
+      function: "Default"
+      template: |
+        {{.Original}}
+        {{.Var}}.Use(middleware.CustomTracing())
+      imports:
+        - "myapp/middleware"
+```
+
+### Example 4: add + replace Combination
+
+```yaml
+custom:
+  # Step 1: Create helper function
+  add:
+    - package: "myapp/db"
+      file: "whatap_wrapper.go"
+      content: |
+        package db
+
+        func TracedQuery(ctx context.Context, sql string) (*Result, error) {
+            ctx = trace.StartMethod(ctx, "db.query")
+            defer trace.EndMethod(ctx, nil)
+            return OriginalQuery(sql)
+        }
+
+  # Step 2: Replace original function calls with helper
+  replace:
+    - package: "myapp/db"
+      function: "Query"
+      with: "TracedQuery"
 ```
 
 ---

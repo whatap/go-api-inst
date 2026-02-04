@@ -5,73 +5,15 @@ Wraps `go` commands to automatically inject instrumentation code.
 ## Overview
 
 ```bash
-# 1. Initialize (once, in go.mod directory)
-whatap-go-inst init
-
-# 2. Add dependencies (required!)
-go get github.com/whatap/go-api@latest
-go mod tidy
-
-# 3. Instrumented build
+# Build (no init required)
 whatap-go-inst go build ./...
 ```
 
-## Build Modes
-
-### Fast Mode (default) vs Wrap Mode
-
-| Item | Fast Mode (default) | --wrap Mode |
-|------|---------------------|-------------|
-| **Command** | `whatap-go-inst go build` | `whatap-go-inst go --wrap build` |
-| **Prerequisites** | `init` required | None |
-| **Speed** | Fast | Slow |
-| **Source copy** | No copy | Copies to temp folder |
-| **Original changes** | Adds tool.go | No changes |
-| **Use case** | Daily development, CI/CD | First test, 100% original preservation |
-
-### init Command
-
-```bash
-whatap-go-inst init
-```
-
-**Generated files:**
-```
-whatap_inst.tool.go      # whatap dependency imports (//go:build whatap_tools)
-whatap_inst_generate.go  # go:generate directive
-```
-
-**Operations:**
-1. Analyze project (detect frameworks in use)
-2. Generate tool.go (import required whatap packages)
-
-> **Note**: After init, run `go get github.com/whatap/go-api@latest` and `go mod tidy` to add dependencies.
-
-### Fast Mode Operation
+## How It Works
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
 │  whatap-go-inst go build ./...                              │
-└─────────────────────┬───────────────────────────────────────┘
-                      │
-                      ▼
-┌─────────────────────────────────────────────────────────────┐
-│  go build -tags whatap_tools -toolexec="..." ./...          │
-└─────────────────────┬───────────────────────────────────────┘
-                      │
-                      ▼
-┌─────────────────────────────────────────────────────────────┐
-│  1. -tags whatap_tools includes tool.go                     │
-│  2. Go includes whatap packages in dependencies             │
-│  3. toolexec injects instrumentation at compile time        │
-└─────────────────────────────────────────────────────────────┘
-```
-
-### Wrap Mode Operation (--wrap)
-
-```
-┌─────────────────────────────────────────────────────────────┐
-│  whatap-go-inst go --wrap build ./...                       │
 └─────────────────────┬───────────────────────────────────────┘
                       │
                       ▼
@@ -85,64 +27,31 @@ whatap_inst_generate.go  # go:generate directive
 └─────────────────────────────────────────────────────────────┘
 ```
 
-### Error Message When Building Without init
+## Key Features
 
-```
-$ whatap-go-inst go build ./...
+1. **No init required**
+   - Just run `whatap-go-inst go build ./...`
+   - Dependencies are automatically added
 
-Error: whatap_inst.tool.go not found.
-
-Run init first (in go.mod directory):
-  whatap-go-inst init
-
-Or use wrap mode:
-  whatap-go-inst go --wrap build ./...
-```
-
-### Fast Mode Considerations
-
-1. **init required**
-   - `whatap_inst.tool.go` must exist
-   - Error message with solution shown if missing
-
-2. **go-api version update**
-   - Re-run `init` or execute directly:
-     ```bash
-     go get github.com/whatap/go-api@latest
-     ```
-
-3. **Save transformed source (optional)**
-   - By default, whatap-instrumented/ is not created
-   - Use `--output` flag to save instrumented source
-   - Or use `GO_API_AST_OUTPUT_DIR` environment variable
-
-### --wrap Mode Considerations
-
-1. **Original go.mod is not modified**
+2. **Original go.mod is not modified**
    - `go get`, `go mod tidy` only run in temp folder
    - Original source remains unchanged
 
-2. **Downloads @latest every time**
+3. **Downloads @latest every time**
    - `go get github.com/whatap/go-api@latest` runs automatically
    - New go-api versions are automatically applied
 
-3. **whatap-instrumented/ directory created**
+4. **whatap-instrumented/ directory created**
    - Can check transformed source code
    - Useful for debugging
+   - Use `--no-output` to disable
 
 ## Usage
 
 ### Recommended Workflow
 
 ```bash
-# 1. Initialize (once)
-whatap-go-inst init
-
-# 2. Add dependency (once)
-go get github.com/whatap/go-api@latest
-go mod tidy
-
-# 3. Instrumented build (daily use)
+# Just build (no setup required)
 whatap-go-inst go build ./...
 ```
 
@@ -158,29 +67,12 @@ whatap-go-inst go build ./...
 # Specify output file
 whatap-go-inst go build -o myapp .
 
-# Also save instrumented source files (--output or -O)
-whatap-go-inst go --output ./instrumented build ./...
-whatap-go-inst go -O ./instrumented build ./...
+# Disable instrumented source output
+whatap-go-inst --no-output go build ./...
+
+# Save instrumented source to custom path
+whatap-go-inst --output ./instrumented go build ./...
 ```
-
-> **Note**: When using `--output` flag, only .go files used in build are saved.
-> For full source, use the `inject` command.
-
-### Wrap Mode Build (--wrap)
-
-```bash
-# Build without dependency (adds temp dependency)
-whatap-go-inst go --wrap build .
-
-# Wrap build all packages
-whatap-go-inst go --wrap build ./...
-
-# Specify output file
-whatap-go-inst go --wrap build -o myapp .
-```
-
-> **Note**: Wrap mode builds in a temp directory so original go.mod is not modified.
-> Useful for testing or first-time use.
 
 ### Run
 
@@ -351,16 +243,11 @@ Error: github.com/whatap/go-api not found in go.mod.
 
 **Solution:**
 
-1. **Add dependency (recommended)**
-   ```bash
-   go get github.com/whatap/go-api@latest
-   whatap-go-inst go build ./...
-   ```
-
-2. **Use wrap mode (temporary)**
-   ```bash
-   whatap-go-inst go --wrap build ./...
-   ```
+Add dependency first:
+```bash
+go get github.com/whatap/go-api@latest
+whatap-go-inst go build ./...
+```
 
 ### Switching from Manual to Automatic Instrumentation
 
@@ -402,6 +289,5 @@ whatap-go-inst go build ./...
 
 ## Next Steps
 
-- [toolexec Mode Details](./toolexec.md)
-- [go:generate Mode](./go-generate.md)
 - [Direct Source Modification Mode](./source-inject.md)
+- [Multi-Module Projects](./multi-module.md)

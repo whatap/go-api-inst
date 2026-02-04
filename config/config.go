@@ -20,6 +20,16 @@ const (
 	PresetCustom Preset = "custom"
 )
 
+// DefaultCopyExcludeDirs are the default directories to skip when copying source files
+var DefaultCopyExcludeDirs = []string{
+	".git",
+	".idea",
+	".vscode",
+	".github",
+	"whatap-instrumented", // default output directory
+	"node_modules",        // large, not needed for Go build
+}
+
 // DefaultExcludePatterns are the default file/directory patterns to skip
 // These are auto-generated files or directories that should not be instrumented
 var DefaultExcludePatterns = []string{
@@ -94,8 +104,12 @@ type Config struct {
 	// Custom contains user-defined instrumentation rules (§4)
 	Custom CustomConfig `yaml:"custom"`
 
-	// Exclude is file patterns to exclude
+	// Exclude is file patterns to exclude from instrumentation
 	Exclude []string `yaml:"exclude"`
+
+	// CopyExclude is directories to exclude when copying source files
+	// These are added to DefaultCopyExcludeDirs
+	CopyExclude []string `yaml:"copy_exclude"`
 
 	// BaseDir is the base directory for all relative paths (not loaded from yaml)
 	// If config file is .whatap/config.yaml, BaseDir is the parent of .whatap/
@@ -262,6 +276,23 @@ func (c *Config) GetExcludePatterns() []string {
 	return c.Exclude
 }
 
+// GetCopyExcludeDirs returns directories to exclude when copying
+// Returns DefaultCopyExcludeDirs + user-defined CopyExclude
+func (c *Config) GetCopyExcludeDirs() []string {
+	// Start with default list
+	result := make([]string, len(DefaultCopyExcludeDirs))
+	copy(result, DefaultCopyExcludeDirs)
+
+	// Add user-defined excludes
+	for _, dir := range c.CopyExclude {
+		if !contains(result, dir) {
+			result = append(result, dir)
+		}
+	}
+
+	return result
+}
+
 // Merge merges non-zero values from another Config (priority: other > c)
 func (c *Config) Merge(other *Config) {
 	if other == nil {
@@ -313,6 +344,11 @@ func (c *Config) Merge(other *Config) {
 	// Merge Exclude (add)
 	if len(other.Exclude) > 0 {
 		c.Exclude = append(c.Exclude, other.Exclude...)
+	}
+
+	// Merge CopyExclude (add)
+	if len(other.CopyExclude) > 0 {
+		c.CopyExclude = append(c.CopyExclude, other.CopyExclude...)
 	}
 }
 

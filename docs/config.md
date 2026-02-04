@@ -10,6 +10,7 @@ Detailed guide for whatap-go-inst configuration files.
 - [Package List](#package-list)
 - [Custom Settings (User-Defined Instrumentation)](#custom-settings-user-defined-instrumentation)
 - [Exclude Patterns](#exclude-patterns)
+- [Copy Exclude Directories](#copy-exclude-directories)
 - [Priority](#priority)
 - [Usage Examples](#usage-examples)
 - [Environment Variables](#environment-variables)
@@ -467,6 +468,41 @@ exclude:
 ```
 
 > **Note**: System paths (`GOROOT`, `GOMODCACHE`) are always excluded regardless of config settings.
+
+---
+
+## Copy Exclude Directories
+
+Specify directories to exclude when copying source files (Build Wrapper mode).
+
+### Default Copy Exclude
+
+The following directories are **always excluded** from copying:
+
+```
+.git                  // Git repository
+.idea                 // IntelliJ IDEA
+.vscode               // VS Code
+.github               // GitHub Actions
+whatap-instrumented   // Default tool output directory
+node_modules          // Large, not needed for Go build
+```
+
+> **Note**: `build` and `dist` directories are **NOT** excluded because they are common `go:embed` targets in Go projects (e.g., `ui/build/`, `web/dist/` for frontend assets).
+
+### Custom Copy Exclude
+
+Add additional directories to exclude:
+
+```yaml
+# .whatap/config.yaml
+copy_exclude:
+  - "tmp"           # Custom temporary directory
+  - "cache"         # Custom cache directory
+  - "data"          # Large data directory
+```
+
+> **Note**: Custom `copy_exclude` entries are **added** to the default list (not replaced).
 
 ---
 

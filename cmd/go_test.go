@@ -5,6 +5,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/whatap/go-api-inst/config"
 )
 
 func TestShouldApplyInject(t *testing.T) {
@@ -187,7 +189,7 @@ go 1.21
 	}
 
 	// Run copySourceFiles
-	if err := copySourceFiles(srcDir, dstDir); err != nil {
+	if err := copySourceFiles(srcDir, dstDir, config.DefaultCopyExcludeDirs); err != nil {
 		t.Fatalf("copySourceFiles() error = %v", err)
 	}
 
@@ -206,14 +208,249 @@ go 1.21
 		t.Error("go.sum should be copied")
 	}
 
-	// Check .git was NOT copied
+	// Check .git was NOT copied (excluded directory)
 	if _, err := os.Stat(filepath.Join(dstDir, ".git")); !os.IsNotExist(err) {
 		t.Error(".git directory should not be copied")
 	}
 
-	// Check README.md was NOT copied
-	if _, err := os.Stat(filepath.Join(dstDir, "README.md")); !os.IsNotExist(err) {
-		t.Error("README.md should not be copied")
+	// Check README.md WAS copied (all files are now copied)
+	if _, err := os.Stat(filepath.Join(dstDir, "README.md")); os.IsNotExist(err) {
+		t.Error("README.md should be copied")
+	}
+}
+
+// TestCopySourceFiles_EmbedFiles tests that go:embed referenced files are copied (§87)
+func TestCopySourceFiles_EmbedFiles(t *testing.T) {
+	srcDir := t.TempDir()
+	dstDir := t.TempDir()
+
+	// Create project structure simulating go:embed usage:
+	// srcDir/
+	// ├── main.go (with //go:embed templates/*)
+	// ├── go.mod
+	// ├── templates/
+	// │   ├── index.html
+	// │   └── style.css
+	// └── migrations/
+	//     └── 001_init.sql
+
+	// Create main.go with embed directive
+	mainGo := `package main
+
+import (
+	"embed"
+	"fmt"
+)
+
+//go:embed templates/*
+var templates embed.FS
+
+//go:embed migrations/*.sql
+var migrations embed.FS
+
+func main() {
+	fmt.Println("Hello")
+}
+`
+	if err := os.WriteFile(filepath.Join(srcDir, "main.go"), []byte(mainGo), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Create go.mod
+	goMod := `module embed-test
+
+go 1.21
+`
+	if err := os.WriteFile(filepath.Join(srcDir, "go.mod"), []byte(goMod), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Create templates directory and files
+	templatesDir := filepath.Join(srcDir, "templates")
+	if err := os.MkdirAll(templatesDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(templatesDir, "index.html"), []byte("<html></html>"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(templatesDir, "style.css"), []byte("body {}"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Create migrations directory and files
+	migrationsDir := filepath.Join(srcDir, "migrations")
+	if err := os.MkdirAll(migrationsDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(migrationsDir, "001_init.sql"), []byte("CREATE TABLE users;"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Run copySourceFiles
+	if err := copySourceFiles(srcDir, dstDir, config.DefaultCopyExcludeDirs); err != nil {
+		t.Fatalf("copySourceFiles() error = %v", err)
+	}
+
+	// Check main.go was copied
+	if _, err := os.Stat(filepath.Join(dstDir, "main.go")); os.IsNotExist(err) {
+		t.Error("main.go should be copied")
+	}
+
+	// Check go.mod was copied
+	if _, err := os.Stat(filepath.Join(dstDir, "go.mod")); os.IsNotExist(err) {
+		t.Error("go.mod should be copied")
+	}
+
+	// Check templates directory was copied (§87 fix)
+	if _, err := os.Stat(filepath.Join(dstDir, "templates")); os.IsNotExist(err) {
+		t.Error("templates directory should be copied for go:embed")
+	}
+
+	// Check template files were copied
+	if _, err := os.Stat(filepath.Join(dstDir, "templates", "index.html")); os.IsNotExist(err) {
+		t.Error("templates/index.html should be copied for go:embed")
+	}
+	if _, err := os.Stat(filepath.Join(dstDir, "templates", "style.css")); os.IsNotExist(err) {
+		t.Error("templates/style.css should be copied for go:embed")
+	}
+
+	// Check migrations directory was copied (§87 fix)
+	if _, err := os.Stat(filepath.Join(dstDir, "migrations")); os.IsNotExist(err) {
+		t.Error("migrations directory should be copied for go:embed")
+	}
+
+	// Check migration files were copied
+	if _, err := os.Stat(filepath.Join(dstDir, "migrations", "001_init.sql")); os.IsNotExist(err) {
+		t.Error("migrations/001_init.sql should be copied for go:embed")
+	}
+}
+
+// TestFindGoModDir_FromSubdirectory tests finding go.mod from a subdirectory (§89)
+func TestFindGoModDir_FromSubdirectory(t *testing.T) {
+	// Create project structure:
+	// tmpDir/
+	// ├── go.mod
+	// ├── main.go
+	// └── cmd/
+	//     └── app/
+	//         └── main.go
+
+	tmpDir := t.TempDir()
+
+	// Create go.mod at project root
+	goMod := `module test-project
+
+go 1.21
+`
+	if err := os.WriteFile(filepath.Join(tmpDir, "go.mod"), []byte(goMod), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Create main.go at root
+	mainGo := `package main
+
+func main() {}
+`
+	if err := os.WriteFile(filepath.Join(tmpDir, "main.go"), []byte(mainGo), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Create cmd/app directory
+	cmdAppDir := filepath.Join(tmpDir, "cmd", "app")
+	if err := os.MkdirAll(cmdAppDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	// Create cmd/app/main.go
+	cmdMainGo := `package main
+
+func main() {}
+`
+	if err := os.WriteFile(filepath.Join(cmdAppDir, "main.go"), []byte(cmdMainGo), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Test: FindGoModDir from cmd/app should return tmpDir (project root)
+	foundDir := config.FindGoModDir(cmdAppDir)
+	if foundDir != tmpDir {
+		t.Errorf("FindGoModDir() from subdirectory = %q, want %q", foundDir, tmpDir)
+	}
+
+	// Test: FindGoModDir from project root should return tmpDir
+	foundDir = config.FindGoModDir(tmpDir)
+	if foundDir != tmpDir {
+		t.Errorf("FindGoModDir() from root = %q, want %q", foundDir, tmpDir)
+	}
+}
+
+// TestCopySourceFiles_FromSubdirectory tests copying when build is run from subdirectory (§89)
+func TestCopySourceFiles_FromSubdirectory(t *testing.T) {
+	// Scenario: cd project/cmd/app && whatap-go-inst go build .
+	// Expected: entire project/ is copied (based on go.mod location)
+
+	srcDir := t.TempDir()
+	dstDir := t.TempDir()
+
+	// Create project structure:
+	// srcDir/ (project root with go.mod)
+	// ├── go.mod
+	// ├── main.go
+	// ├── pkg/
+	// │   └── util.go
+	// └── cmd/
+	//     └── app/
+	//         └── main.go
+
+	// Create go.mod
+	goMod := `module test-project
+
+go 1.21
+`
+	if err := os.WriteFile(filepath.Join(srcDir, "go.mod"), []byte(goMod), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Create root main.go
+	if err := os.WriteFile(filepath.Join(srcDir, "main.go"), []byte("package main\nfunc main() {}"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Create pkg/util.go
+	pkgDir := filepath.Join(srcDir, "pkg")
+	if err := os.MkdirAll(pkgDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(pkgDir, "util.go"), []byte("package pkg\nfunc Util() {}"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Create cmd/app/main.go
+	cmdAppDir := filepath.Join(srcDir, "cmd", "app")
+	if err := os.MkdirAll(cmdAppDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(cmdAppDir, "main.go"), []byte("package main\nimport _ \"test-project/pkg\"\nfunc main() {}"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Run copySourceFiles from project root (simulating what wrapper mode does)
+	// When building from cmd/app, FindGoModDir returns srcDir, and we copy from srcDir
+	if err := copySourceFiles(srcDir, dstDir, config.DefaultCopyExcludeDirs); err != nil {
+		t.Fatalf("copySourceFiles() error = %v", err)
+	}
+
+	// Check all files were copied
+	checks := []string{
+		"go.mod",
+		"main.go",
+		filepath.Join("pkg", "util.go"),
+		filepath.Join("cmd", "app", "main.go"),
+	}
+
+	for _, file := range checks {
+		if _, err := os.Stat(filepath.Join(dstDir, file)); os.IsNotExist(err) {
+			t.Errorf("%s should be copied when building from subdirectory", file)
+		}
 	}
 }
 

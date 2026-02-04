@@ -5,14 +5,13 @@ import (
 	"os"
 
 	"github.com/whatap/go-api-inst/ast"
+	"github.com/whatap/go-api-inst/report"
 
 	"github.com/spf13/cobra"
 )
 
 var (
-	injectSrc           string
-	injectOutput        string
-	injectErrorTracking bool
+	injectSrc string
 )
 
 var injectCmd = &cobra.Command{
@@ -39,6 +38,18 @@ Injected content:
 		// Initialize report
 		InitReport("inject")
 
+		// Load dependencies from go.mod
+		r := report.Get()
+		r.SetDirs(injectSrc, outputDir)
+		loadDependencies(r, cfg.BaseDir)
+
+		// Use rootCmd flags (outputDir, errorTracking)
+		// Default output directory for inject is "./output"
+		injectOutput := outputDir
+		if injectOutput == "" {
+			injectOutput = "./output"
+		}
+
 		if !quiet {
 			fmt.Printf("Source path: %s\n", injectSrc)
 			fmt.Printf("Output path: %s\n", injectOutput)
@@ -46,18 +57,18 @@ Injected content:
 		}
 
 		// ErrorTracking: Use CLI flag if explicitly set, otherwise use config file value
-		errorTracking := cfg.Instrumentation.ErrorTracking
-		if cmd.Flags().Changed("error-tracking") {
-			errorTracking = injectErrorTracking
+		errorTrackingEnabled := cfg.Instrumentation.ErrorTracking
+		if cmd.Root().PersistentFlags().Changed("error-tracking") {
+			errorTrackingEnabled = errorTracking
 		}
 
 		injector := ast.NewInjector()
-		injector.ErrorTrackingEnabled = errorTracking
+		injector.ErrorTrackingEnabled = errorTrackingEnabled
 		injector.EnabledPackages = cfg.GetEnabledPackages()
 		injector.Config = cfg // For custom rules access (§4)
 
 		if cfg.Instrumentation.Debug {
-			fmt.Fprintf(os.Stderr, "[whatap-go-inst] ErrorTracking: %v\n", errorTracking)
+			fmt.Fprintf(os.Stderr, "[whatap-go-inst] ErrorTracking: %v\n", errorTrackingEnabled)
 		}
 
 		if info.IsDir() {
@@ -81,7 +92,7 @@ Injected content:
 
 func init() {
 	injectCmd.Flags().StringVarP(&injectSrc, "src", "s", ".", "Source code path")
-	injectCmd.Flags().StringVarP(&injectOutput, "output", "o", "./output", "Output directory")
-	injectCmd.Flags().BoolVar(&injectErrorTracking, "error-tracking", false, "Enable error tracking code injection (adds trace.Error to if err != nil patterns)")
+	// Add -o shorthand for output (--output is inherited from rootCmd PersistentFlags)
+	injectCmd.Flags().StringVarP(&outputDir, "output", "o", "", "Output directory (default: ./output)")
 	rootCmd.AddCommand(injectCmd)
 }

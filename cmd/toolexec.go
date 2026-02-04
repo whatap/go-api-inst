@@ -1,10 +1,12 @@
 package cmd
 
 import (
+	"bufio"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 
 	"github.com/whatap/go-api-inst/ast"
@@ -12,6 +14,9 @@ import (
 
 	"github.com/spf13/cobra"
 )
+
+// embedPattern matches //go:embed directives
+var embedPattern = regexp.MustCompile(`//go:embed\s+(.+)`)
 
 var toolexecCmd = &cobra.Command{
 	Use:   "toolexec",
@@ -97,6 +102,29 @@ func processCompileArgs(args []string) []string {
 	injector := ast.NewInjector()
 	var transformedFiles []string
 
+	// Get project root for relative path calculation
+	projectRoot := os.Getenv("GO_API_PROJECT_DIR")
+	if projectRoot == "" {
+		projectRoot, _ = os.Getwd()
+	}
+
+	// Create symlinks to go.mod and go.sum in temp directory for module resolution
+	// This is critical for toolexec mode where transformed files need module context
+	goModPath := filepath.Join(projectRoot, "go.mod")
+	goSumPath := filepath.Join(projectRoot, "go.sum")
+	if _, err := os.Stat(goModPath); err == nil {
+		tmpGoMod := filepath.Join(tmpDir, "go.mod")
+		tmpGoSum := filepath.Join(tmpDir, "go.sum")
+		// Use symlink for go.mod
+		os.Symlink(goModPath, tmpGoMod)
+		if _, err := os.Stat(goSumPath); err == nil {
+			os.Symlink(goSumPath, tmpGoSum)
+		}
+		if os.Getenv("GO_API_AST_DEBUG") != "" {
+			fmt.Fprintf(os.Stderr, "[whatap-go-inst] go.mod symlink: %s -> %s\n", tmpGoMod, goModPath)
+		}
+	}
+
 	for _, goFile := range goFiles {
 		// Skip standard library and external packages
 		if shouldSkipFile(goFile) {
@@ -104,11 +132,25 @@ func processCompileArgs(args []string) []string {
 			continue
 		}
 
-		// Temporary file path
-		tmpFile := filepath.Join(tmpDir, filepath.Base(goFile))
+		// Calculate relative path to preserve directory structure (§83 go:embed fix)
+		relPath, err := filepath.Rel(projectRoot, goFile)
+		if err != nil || strings.HasPrefix(relPath, "..") {
+			// File outside project, use basename
+			relPath = filepath.Base(goFile)
+		}
+
+		// Create directory structure in temp dir
+		tmpFile := filepath.Join(tmpDir, relPath)
+		if err := os.MkdirAll(filepath.Dir(tmpFile), 0755); err != nil {
+			transformedFiles = append(transformedFiles, goFile)
+			continue
+		}
+
+		// Copy go:embed referenced files/directories before transformation
+		copyEmbedResources(goFile, tmpDir, projectRoot)
 
 		// Attempt AST transformation
-		err := injector.InjectFile(goFile, tmpFile)
+		err = injector.InjectFile(goFile, tmpFile)
 		if err != nil {
 			// Use original on transformation failure
 			transformedFiles = append(transformedFiles, goFile)
@@ -193,6 +235,95 @@ func execTool(tool string, args []string) {
 		}
 		os.Exit(1)
 	}
+}
+
+// copyEmbedResources copies files/directories referenced by //go:embed directives
+// This fixes the issue where embed resources are not found when compiling transformed files
+func copyEmbedResources(goFile, tmpDir, projectRoot string) {
+	file, err := os.Open(goFile)
+	if err != nil {
+		return
+	}
+	defer file.Close()
+
+	goFileDir := filepath.Dir(goFile)
+	scanner := bufio.NewScanner(file)
+
+	for scanner.Scan() {
+		line := scanner.Text()
+		matches := embedPattern.FindStringSubmatch(line)
+		if len(matches) < 2 {
+			continue
+		}
+
+		// Parse embed patterns (can be multiple space-separated)
+		patterns := strings.Fields(matches[1])
+		for _, pattern := range patterns {
+			// Remove quotes if present
+			pattern = strings.Trim(pattern, "\"'`")
+
+			// Source path (relative to go file)
+			srcPath := filepath.Join(goFileDir, pattern)
+
+			// Calculate relative path from project root
+			relGoFileDir, err := filepath.Rel(projectRoot, goFileDir)
+			if err != nil || strings.HasPrefix(relGoFileDir, "..") {
+				continue
+			}
+
+			// Destination path in temp dir
+			dstPath := filepath.Join(tmpDir, relGoFileDir, pattern)
+
+			// Copy file or directory
+			if info, err := os.Stat(srcPath); err == nil {
+				if info.IsDir() {
+					copyDirForEmbed(srcPath, dstPath)
+				} else {
+					copyFile(srcPath, dstPath)
+				}
+			} else {
+				// Handle glob patterns
+				matches, _ := filepath.Glob(srcPath)
+				for _, match := range matches {
+					relMatch, _ := filepath.Rel(goFileDir, match)
+					dstMatch := filepath.Join(tmpDir, relGoFileDir, relMatch)
+					if info, err := os.Stat(match); err == nil {
+						if info.IsDir() {
+							copyDirForEmbed(match, dstMatch)
+						} else {
+							copyFile(match, dstMatch)
+						}
+					}
+				}
+			}
+
+			if os.Getenv("GO_API_AST_DEBUG") != "" {
+				fmt.Fprintf(os.Stderr, "[whatap-go-inst] copied embed resource: %s -> %s\n", srcPath, dstPath)
+			}
+		}
+	}
+}
+
+// copyDirRecursive copies a directory recursively (for embed resources)
+func copyDirForEmbed(src, dst string) error {
+	return filepath.Walk(src, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
+
+		relPath, err := filepath.Rel(src, path)
+		if err != nil {
+			return err
+		}
+
+		dstPath := filepath.Join(dst, relPath)
+
+		if info.IsDir() {
+			return os.MkdirAll(dstPath, info.Mode())
+		}
+
+		return copyFile(path, dstPath)
+	})
 }
 
 func init() {

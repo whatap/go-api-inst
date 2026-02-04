@@ -413,5 +413,4 @@ whatap-go-inst inject -s ./large-project -o ./instrumented 2>&1 | tee inject.log
 ## Next Steps
 
 - [Build Wrapper Mode](./build-wrapper.md) - Simpler approach
-- [toolexec Mode](./toolexec.md)
-- [go:generate Mode](./go-generate.md)
+- [Multi-Module Projects](./multi-module.md)

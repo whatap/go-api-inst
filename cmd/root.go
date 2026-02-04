@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 
+	"github.com/whatap/go-api-inst/ast/common"
 	"github.com/whatap/go-api-inst/config"
 	"github.com/whatap/go-api-inst/report"
 
@@ -22,6 +23,18 @@ var (
 
 	// reportPath --report flag
 	reportPath string
+
+	// outputDir --output flag (instrumented source output directory)
+	outputDir string
+
+	// noOutput --no-output flag (do not save instrumented source)
+	noOutput bool
+
+	// errorTracking --error-tracking flag
+	errorTracking bool
+
+	// fastMode --fast flag (use toolexec, requires init)
+	fastMode bool
 
 	// globalConfig loaded configuration (used by subcommands)
 	globalConfig *config.Config
@@ -105,6 +118,8 @@ func ReloadConfigWithProjectDir(projectDir string) *config.Config {
 }
 
 func Execute() {
+	// TraverseChildren allows parsing persistent flags even for commands with DisableFlagParsing
+	rootCmd.TraverseChildren = true
 	if err := rootCmd.Execute(); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
@@ -116,6 +131,10 @@ func init() {
 	rootCmd.PersistentFlags().BoolVarP(&verbose, "verbose", "v", false, "Verbose output (include transformation details)")
 	rootCmd.PersistentFlags().BoolVarP(&quiet, "quiet", "q", false, "Summary only output")
 	rootCmd.PersistentFlags().StringVar(&reportPath, "report", "", "Report file path (JSON format)")
+	rootCmd.PersistentFlags().StringVar(&outputDir, "output", "", "Instrumented source output directory (default: whatap-instrumented/)")
+	rootCmd.PersistentFlags().BoolVar(&noOutput, "no-output", false, "Do not save instrumented source")
+	rootCmd.PersistentFlags().BoolVar(&errorTracking, "error-tracking", false, "Enable error tracking code injection")
+	rootCmd.PersistentFlags().BoolVar(&fastMode, "fast", false, "Fast mode (use toolexec, requires init)")
 }
 
 // InitReport initializes report (called from subcommands)
@@ -140,6 +159,28 @@ func FinalizeReport() {
 	if reportPath != "" {
 		if err := r.SaveJSON(reportPath); err != nil {
 			fmt.Fprintf(os.Stderr, "Failed to save report: %v\n", err)
+		}
+	}
+}
+
+// loadDependencies loads go.mod dependencies and matches against transformers
+func loadDependencies(r *report.Report, baseDir string) {
+	// Get all registered transformers
+	transformers := common.GetAllTransformers()
+
+	// Convert to TransformerInfo
+	infos := make([]report.TransformerInfo, len(transformers))
+	for i, t := range transformers {
+		infos[i] = report.TransformerInfo{
+			Name:       t.Name(),
+			ImportPath: t.ImportPath(),
+		}
+	}
+
+	// Load dependencies
+	if err := r.LoadDependenciesFromDir(baseDir, infos); err != nil {
+		if verbose {
+			fmt.Fprintf(os.Stderr, "[whatap-go-inst] Warning: Failed to load go.mod: %v\n", err)
 		}
 	}
 }

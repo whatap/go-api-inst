@@ -10,43 +10,14 @@ Go AST-based automatic instrumentation tool for WhaTap APM monitoring.
 # Install
 go install github.com/whatap/go-api-inst/cmd/whatap-go-inst@latest
 
-# Initialize (once, in go.mod directory)
-whatap-go-inst init
-
-# Add dependencies (required after init)
-go get github.com/whatap/go-api@latest
-go mod tidy
-
-# Build (default fast mode)
+# Build (no init required)
 whatap-go-inst go build ./...
 
 # Run
 whatap-go-inst go run .
 ```
 
-### Method 2: toolexec
-
-```bash
-# Initialize and add dependencies first
-whatap-go-inst init
-go get github.com/whatap/go-api@latest
-go mod tidy
-
-# Build with toolexec
-go build -toolexec="whatap-go-inst toolexec" ./...
-```
-
-### Method 3: go:generate
-
-```bash
-whatap-go-inst init
-go get github.com/whatap/go-api@latest
-go mod tidy
-go generate ./...
-go build ./...
-```
-
-### Method 4: Direct Source Modification
+### Method 2: Direct Source Modification
 
 ```bash
 whatap-go-inst inject -s ./myapp -o ./instrumented
@@ -55,61 +26,46 @@ cd instrumented && go build .
 
 ## Instrumentation Modes
 
-| Mode | Command | Requires init | Source Copy | Speed | Use Case |
-|------|---------|---------------|-------------|-------|----------|
-| Default (fast) | `whatap-go-inst go build` | Yes | No | Fast | **Daily development** |
-| Wrap | `whatap-go-inst go --wrap build` | No | Yes | Slow | First test, CI/CD |
+| Mode | Command | Requires init | Source Copy | Use Case |
+|------|---------|---------------|-------------|----------|
+| Build Wrapper | `whatap-go-inst go build` | No | Yes | **Recommended** |
+| Direct Modify | `whatap-go-inst inject` | No | Yes | Review/Compare |
 
-### Default Mode (fast) Details
+### Build Wrapper Mode Details
 
-**Prerequisites:**
-- Run `whatap-go-inst init` once (creates tool.go)
-- Run `go get github.com/whatap/go-api@latest` and `go mod tidy` (adds dependencies)
-
-**Usage:**
+**No setup required - just build:**
 ```bash
-# 1. Initialize (once)
-whatap-go-inst init
-
-# 2. Add dependencies (once)
-go get github.com/whatap/go-api@latest
-go mod tidy
-
-# 3. Build (repeat)
 whatap-go-inst go build ./...
 ```
 
-**Default Mode vs --wrap Mode:**
+**Instrumented source output:**
 
-| Feature | Default Mode (fast) | --wrap Mode |
-|---------|---------------------|-------------|
-| Requires init | Yes | No |
-| Requires `go get` + `go mod tidy` | Yes (once after init) | No (auto) |
-| go-api update | Manual | Auto (@latest) |
-| Source copy | No | Yes (temp folder) |
-| Build speed | Fast | Slow |
+The instrumented source is automatically saved to `whatap-instrumented/` directory after each build.
 
-**Updating go-api:**
+```
+myapp/
+├── main.go                    # Original source
+├── whatap-instrumented/       # Auto-generated (add to .gitignore)
+│   ├── main.go                # Instrumented source
+│   ├── go.mod
+│   └── go.sum
+└── myapp.exe                  # Built binary
+```
+
+To customize the output path:
 ```bash
-# When using default mode and need to update go-api:
-go get github.com/whatap/go-api@latest
+whatap-go-inst --output ./custom-dir go build ./...
 ```
 
-**Building without init:**
-```
-Error: whatap_inst.tool.go not found.
-
-Run init first (in go.mod directory):
-  whatap-go-inst init
-
-Or use wrap mode:
-  whatap-go-inst go --wrap build ./...
+To disable output (no directory created):
+```bash
+whatap-go-inst --no-output go build ./...
 ```
 
 **Saving Instrumented Source (optional):**
 ```bash
-# Save instrumented source with --output or -O flag
-whatap-go-inst go --output ./instrumented build ./...
+# Save instrumented source with --output flag
+whatap-go-inst --output ./instrumented go build ./...
 
 # Only .go files used in build are saved (not entire source)
 ```
@@ -119,8 +75,6 @@ whatap-go-inst go --output ./instrumented build ./...
 | Mode | Source Changes | Complexity | Recommended When |
 |------|----------------|------------|------------------|
 | [Build Wrapper](./build-wrapper.md) | No | Low | **Default**, simplest |
-| [toolexec](./toolexec.md) | No | Medium | Fine-grained build control |
-| [go:generate](./go-generate.md) | Yes | Medium | Commit transformed code to Git |
 | [Direct Modification](./source-inject.md) | Yes (separate dir) | Medium | Compare/review transformations |
 
 ## Documentation
@@ -134,7 +88,7 @@ whatap-go-inst go --output ./instrumented build ./...
 
 2. **[Multi-Module Projects](./multi-module.md)**
    - Instrumenting projects with multiple modules
-   - replace directive + default (fast) mode
+   - replace directive handling
    - Mode comparison and considerations
 
 ### Configuration

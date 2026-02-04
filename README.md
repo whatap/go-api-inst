@@ -45,14 +45,7 @@ go build -o whatap-go-inst .
 The simplest method. Just prefix your `go` commands with `whatap-go-inst`.
 
 ```bash
-# 1. Initialize (once, in go.mod directory)
-whatap-go-inst init
-
-# 2. Add dependencies (required!)
-go get github.com/whatap/go-api@latest
-go mod tidy
-
-# 3. Build
+# Build (no init required)
 whatap-go-inst go build ./...
 whatap-go-inst go build -o myapp .
 
@@ -65,44 +58,7 @@ whatap-go-inst go test ./...
 
 Original source code remains unchanged; instrumentation is only applied to the build output.
 
-### Method 2: Direct toolexec
-
-Use Go's `-toolexec` flag directly.
-
-```bash
-go build -toolexec="whatap-go-inst toolexec" ./...
-go build -toolexec="whatap-go-inst toolexec" -o myapp .
-```
-
-For debug output:
-
-```bash
-GO_API_AST_DEBUG=1 go build -toolexec="whatap-go-inst toolexec" ./...
-```
-
-### Method 3: go:generate
-
-Use with `go generate`. Source code is directly modified.
-
-```bash
-# 1. Add go:generate directive
-whatap-go-inst init
-
-# 2. Add dependencies (required!)
-go get github.com/whatap/go-api@latest
-go mod tidy
-
-# 3. Generate code (inject monitoring code)
-go generate ./...
-
-# 4. Build
-go build ./...
-
-# 5. (Optional) Remove directive
-whatap-go-inst uninit
-```
-
-### Method 4: Direct Source Modification
+### Method 2: Direct Source Modification
 
 Modify source code directly and output to a separate directory.
 
@@ -123,17 +79,13 @@ Download the binary from GitHub Releases for Docker builds.
 FROM golang:1.21-alpine AS builder
 
 # Install whatap-go-inst
-ARG INST_VERSION=0.5.0
-RUN wget -qO- https://github.com/whatap/go-api-inst/releases/download/v${INST_VERSION}/whatap-go-inst_linux_amd64.tar.gz | tar xz -C /usr/local/bin/
+RUN wget -qO- https://github.com/whatap/go-api-inst/releases/latest/download/whatap-go-inst_linux_amd64.tar.gz | tar xz -C /usr/local/bin/
 
 WORKDIR /app
 COPY . .
 
-# Build with instrumentation
-RUN whatap-go-inst init && \
-    go get github.com/whatap/go-api@latest && \
-    go mod tidy && \
-    whatap-go-inst go build -o /app/server .
+# Build with instrumentation (no init required)
+RUN whatap-go-inst --no-output go build -o /app/server .
 
 # Stage 2: Run with WhaTap agent
 FROM alpine:latest
@@ -160,10 +112,6 @@ CMD ["/bin/sh", "-c", "/usr/whatap/agent/whatap-agent start && ./server"]
 | Command | Description |
 |---------|-------------|
 | `whatap-go-inst go <cmd>` | Wrap go commands (build, run, test, install) |
-| `whatap-go-inst toolexec` | Compile-time injection via -toolexec |
-| `whatap-go-inst init` | Add go:generate directive and tool.go |
-| `whatap-go-inst uninit` | Remove go:generate directive and tool.go |
-| `whatap-go-inst generate` | Called by go:generate to inject code |
 | `whatap-go-inst inject` | Inject monitoring code into source |
 | `whatap-go-inst remove` | Remove monitoring code from source |
 | `whatap-go-inst version` | Print version information |
@@ -278,9 +226,7 @@ mux.Handle("/api", whataphttp.Handler(h))      // Auto-wrapped
 
 For detailed developer guides, see the [docs/](./docs/) directory:
 
-- [Build Wrapper Mode](./docs/build-wrapper.md) - Simplest approach
-- [toolexec Mode](./docs/toolexec.md) - Compiler extension approach
-- [go:generate Mode](./docs/go-generate.md) - Code generation approach
+- [Build Wrapper Mode](./docs/build-wrapper.md) - Simplest approach (recommended)
 - [Direct Source Modification](./docs/source-inject.md) - Separate directory output
 - [Transformation Rules](./docs/instrumentation-rules.md) - Framework-specific patterns
 - [User Guide](./docs/user-guide.md) - Detailed usage

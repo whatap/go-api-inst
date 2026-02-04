@@ -10,9 +10,8 @@ import (
 )
 
 var (
-	removeSrc    string
-	removeOutput string
-	removeAll    bool
+	removeSrc string
+	removeAll bool
 )
 
 var removeCmd = &cobra.Command{
@@ -34,6 +33,13 @@ Removed content:
 	Run: func(cmd *cobra.Command, args []string) {
 		// Initialize report
 		InitReport("remove")
+
+		// Use rootCmd flags (outputDir)
+		// Default output directory for remove is "./output"
+		removeOutput := outputDir
+		if removeOutput == "" {
+			removeOutput = "./output"
+		}
 
 		if !quiet {
 			fmt.Printf("Source path: %s\n", removeSrc)
@@ -74,7 +80,8 @@ Removed content:
 
 func init() {
 	removeCmd.Flags().StringVarP(&removeSrc, "src", "s", ".", "Source code path")
-	removeCmd.Flags().StringVarP(&removeOutput, "output", "o", "./output", "Output directory")
+	// Add -o shorthand for output (--output is inherited from rootCmd PersistentFlags)
+	removeCmd.Flags().StringVarP(&outputDir, "output", "o", "", "Output directory (default: ./output)")
 	removeCmd.Flags().BoolVar(&removeAll, "all", false, "Also remove manually inserted patterns (standalone statements, AddHook, etc.)")
 	rootCmd.AddCommand(removeCmd)
 }

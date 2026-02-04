@@ -454,19 +454,14 @@ func main() {
 		t.Error("Output should contain whataphttp import")
 	}
 
-	// Check context import
-	if !strings.Contains(outputStr, `"context"`) {
-		t.Error("Output should contain context import")
-	}
-
 	// Check http.Get -> whataphttp.HttpGet
 	if !strings.Contains(outputStr, "whataphttp.HttpGet") {
 		t.Error("Output should contain whataphttp.HttpGet")
 	}
 
-	// Check context.Background() argument
-	if !strings.Contains(outputStr, "context.Background()") {
-		t.Error("Output should contain context.Background()")
+	// Check nil context (when no handler context available, we use nil)
+	if !strings.Contains(outputStr, "whataphttp.HttpGet(nil,") {
+		t.Error("Output should contain whataphttp.HttpGet(nil, ...)")
 	}
 }
 
@@ -659,7 +654,8 @@ func main() {
 	}
 
 	// Check the original http.DefaultTransport is wrapped
-	if !strings.Contains(outputStr, "whataphttp.NewRoundTrip(context.Background(), http.DefaultTransport)") {
+	// Uses nil context when not inside a handler function
+	if !strings.Contains(outputStr, "whataphttp.NewRoundTrip(nil, http.DefaultTransport)") {
 		t.Error("Output should wrap http.DefaultTransport with NewRoundTrip")
 	}
 }

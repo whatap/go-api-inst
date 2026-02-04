@@ -29,7 +29,7 @@ Explains how to use whatap-go-inst with projects composed of multiple Go modules
 
 whatap-go-inst handles packages differently based on their location.
 
-### toolexec Skip Rules
+### Skip Rules
 
 ```go
 // 1. Go standard library → Skip
@@ -53,7 +53,7 @@ return false
 | Go standard library | `$GOROOT/src/...` | No (skip) |
 | External modules (go get) | `$GOMODCACHE/...` | No (skip) |
 | My project code | Local path | Yes |
-| replace local modules | Local path (../) | Yes (fast mode only) |
+| replace local modules | Local path (../) | No (use separate inject) |
 
 ---
 
@@ -95,53 +95,7 @@ require (
 
 ## Recommended Approaches
 
-### Approach 1: go.mod replace + Fast Mode (Development)
-
-The simplest method for local development.
-
-**Step 1: Add replace to go.mod**
-
-```go
-// main-app/go.mod
-module mycompany/main-app
-
-require (
-    mycompany/db-lib v1.0.0
-    mycompany/web-lib v1.0.0
-)
-
-// Replace with local paths
-replace mycompany/db-lib => ../db-lib
-replace mycompany/web-lib => ../web-lib
-```
-
-**Step 2: Initialize and add whatap dependency (all modules)**
-
-```bash
-# Initialize in main-app
-cd main-app && whatap-go-inst init
-
-# Add dependency in each module
-cd db-lib && go get github.com/whatap/go-api@latest
-cd web-lib && go get github.com/whatap/go-api@latest
-cd main-app && go get github.com/whatap/go-api@latest
-```
-
-**Step 3: Build**
-
-```bash
-cd main-app
-whatap-go-inst go build ./...
-```
-
-**Result:**
-- main-app instrumented
-- db-lib instrumented (local reference via replace)
-- web-lib instrumented (local reference via replace)
-
----
-
-### Approach 2: Separate inject for Each Module (Deployment)
+### Approach 1: Separate inject for Each Module (Recommended)
 
 Recommended method for production deployment.
 
@@ -178,7 +132,7 @@ go build ./...
 
 ---
 
-### Approach 3: Monorepo Structure (New Projects)
+### Approach 2: Monorepo Structure (New Projects)
 
 For new projects, a single module structure is simplest.
 
@@ -199,91 +153,33 @@ myproject/
 ```
 
 ```bash
-# Initialize (once)
-whatap-go-inst init
-
-# Add dependencies (required!)
-go get github.com/whatap/go-api@latest
-go mod tidy
-
 # Build
 whatap-go-inst go build ./cmd/main
 ```
 
 ---
 
-## Mode Behavior Comparison
+## Important Notes
 
-### --wrap Mode vs Fast Mode
+### 1. replace Module Handling
 
-| Item | --wrap Mode | Fast Mode |
-|------|-------------|-----------|
-| **main module** | Instrumented | Instrumented |
-| **replace modules** | Not instrumented | Instrumented |
-| **External modules (GOMODCACHE)** | Skip | Skip |
-| **Prerequisites** | None | init required + whatap/go-api in go.mod |
-
-### --wrap Mode replace Handling
+With build wrapper mode, replace target modules reference original (non-instrumented) code.
 
 ```go
-// --wrap mode only adjusts replace paths
+// go.mod with replace
 replace mycompany/db-lib => ../db-lib
 
 // After temp directory copy:
 replace mycompany/db-lib => /original/path/to/db-lib  // References original!
 ```
 
-**Result:** replace target modules are not copied, reference original (non-instrumented) code
+**Solution:** Use Approach 1 (separate inject for each module)
 
-### Fast Mode replace Handling
+### 2. replace Modules Not Instrumented
 
-```
-Go compiler → Requests db-lib/connection.go compilation
-           ↓
-toolexec → Check path: ../db-lib/connection.go
-         → GOROOT? No
-         → GOMODCACHE? No
-         → Local path → Instrument!
-```
+Build wrapper mode does not instrument replace modules. The replace target references original (non-instrumented) code.
 
-**Result:** replace target modules are instrumented at compile time
-
----
-
-## Important Notes
-
-### 1. Fast Mode Requirements
-
-For replace module instrumentation, **all modules** need whatap dependency.
-
-```bash
-# Run init in main module
-whatap-go-inst init
-
-# Add dependency in each module
-go get github.com/whatap/go-api@latest
-```
-
-### 2. --output Flag Limitations
-
-With `--output` flag in fast mode, replace modules are not saved properly.
-
-| Module | Save Path | Issue |
-|--------|-----------|-------|
-| main module | `output/pkg/service.go` | Path structure preserved |
-| replace module | `output/connection.go` | Flat (path lost) |
-
-```
-# Expected output
-output/
-├── main.go              # main module (OK)
-├── pkg/
-│   └── handler.go       # main module (OK)
-├── connection.go        # db-lib (path lost!)
-└── server.go            # web-lib (path lost!)
-```
-
-**Recommendation:** If you need to inspect instrumented source, use Approach 2 (separate inject)
+**Recommendation:** If you need to instrument replace modules, use Approach 1 (separate inject for each module)
 
 ### 3. Injecting Libraries Without main
 
@@ -324,22 +220,14 @@ go get github.com/whatap/go-api@latest
 
 ## FAQ
 
-### Q1: I want to instrument replace modules in --wrap mode
+### Q1: I want to instrument replace modules
 
-**A:** --wrap mode does not instrument replace modules. Two options:
+**A:** Build wrapper mode does not instrument replace modules. Use separate inject for each module:
 
-1. **Use fast mode** (recommended)
-   ```bash
-   whatap-go-inst init
-   go get github.com/whatap/go-api@latest && go mod tidy
-   whatap-go-inst go build ./...
-   ```
-
-2. **Separate inject for each module**
-   ```bash
-   whatap-go-inst inject -s ../db-lib -o ../db-lib-inst
-   whatap-go-inst inject -s ../web-lib -o ../web-lib-inst
-   ```
+```bash
+whatap-go-inst inject -s ../db-lib -o ../db-lib-inst
+whatap-go-inst inject -s ../web-lib -o ../web-lib-inst
+```
 
 ### Q2: Can I instrument external libraries (gin, gorm, etc.)?
 
@@ -361,7 +249,7 @@ Instead, **calls to external libraries in user code** are transformed:
 
 **Recommendation:**
 - New projects → Monorepo
-- Existing multi-module → replace + fast mode
+- Existing multi-module → Separate inject for each module
 
 ### Q4: How do I build multi-module in CI/CD?
 
@@ -383,17 +271,21 @@ jobs:
           repository: mycompany/web-lib
           path: web-lib
 
-      # 2. Initialize and add whatap dependency
+      # 2. Inject each module
       - run: |
-          cd main-app && whatap-go-inst init
-          cd db-lib && go get github.com/whatap/go-api@latest
-          cd web-lib && go get github.com/whatap/go-api@latest
-          cd main-app && go get github.com/whatap/go-api@latest
+          whatap-go-inst inject -s db-lib -o db-lib-inst
+          whatap-go-inst inject -s web-lib -o web-lib-inst
+          whatap-go-inst inject -s main-app -o main-app-inst
 
-      # 3. Build
+      # 3. Update replace paths and build
       - run: |
-          cd main-app
-          whatap-go-inst go build -o myapp ./...
+          cd main-app-inst
+          # Update go.mod replace paths to instrumented versions
+          go mod edit -replace mycompany/db-lib=../db-lib-inst
+          go mod edit -replace mycompany/web-lib=../web-lib-inst
+          go get github.com/whatap/go-api@latest
+          go mod tidy
+          go build -o myapp ./...
 ```
 
 ---
