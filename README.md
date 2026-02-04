@@ -220,7 +220,6 @@ mux.Handle("/api", whataphttp.Handler(h))      // Auto-wrapped
 |---------|-------------|
 | [go-api](https://github.com/whatap/go-api) | WhaTap Go monitoring library |
 | [go-api-example](https://github.com/whatap/go-api-example) | go-api usage examples |
-| [Datadog Orchestrion](https://github.com/DataDog/orchestrion) | Similar tool we referenced |
 
 ## Documentation
 
