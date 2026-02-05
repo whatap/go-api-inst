@@ -495,9 +495,12 @@ var aerospikeMethodReturnTypes = map[string]string{
 // Uses hardcoded types in fallback mode.
 func (t *Transformer) getMethodReturnType(sel *dst.SelectorExpr, methodName string) *methodReturnInfo {
 	// Known Aerospike Client methods that return only error
+	// Note: Close is excluded because:
+	// 1. Client.Close() returns void in Aerospike v6 (not error)
+	// 2. Recordset.Close() also exists and shouldn't be wrapped
 	errorOnlyMethods := map[string]bool{
 		"Put": true, "PutBins": true, "Append": true, "Prepend": true,
-		"Add": true, "Touch": true, "Close": true,
+		"Add": true, "Touch": true,
 		"Truncate": true, "CreateIndex": true, "DropIndex": true,
 	}
 

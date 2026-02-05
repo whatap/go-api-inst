@@ -72,11 +72,11 @@ func (t *Transformer) Inject(file *dst.File) (bool, error) {
 			switch sel.Sel.Name {
 			case "NewServer":
 				// Add server interceptors
-				call.Args = append(call.Args, t.createServerInterceptorArgs(pkgName)...)
+				t.addInterceptorArgs(call, t.createServerInterceptorArgs(pkgName))
 				t.transformed = true
 			case "Dial", "DialContext", "NewClient":
 				// Add client interceptors
-				call.Args = append(call.Args, t.createClientInterceptorArgs(pkgName)...)
+				t.addInterceptorArgs(call, t.createClientInterceptorArgs(pkgName))
 				t.transformed = true
 			}
 
@@ -119,6 +119,29 @@ func (t *Transformer) Remove(file *dst.File) error {
 		})
 	}
 	return nil
+}
+
+// addInterceptorArgs adds interceptor arguments to the call.
+// Handles both regular args and spread args (opts...).
+func (t *Transformer) addInterceptorArgs(call *dst.CallExpr, newArgs []dst.Expr) {
+	// Check if the call has spread operator (e.g., grpc.NewClient(addr, opts...))
+	if call.Ellipsis {
+		// Has spread: need to wrap with append()
+		// grpc.NewClient(addr, opts...) -> grpc.NewClient(addr, append(opts, newArg1, newArg2)...)
+		if len(call.Args) > 0 {
+			lastArg := call.Args[len(call.Args)-1]
+			// Create append(opts, newArg1, newArg2)
+			appendCall := &dst.CallExpr{
+				Fun:  dst.NewIdent("append"),
+				Args: append([]dst.Expr{lastArg}, newArgs...),
+			}
+			// Replace last arg with append call, keep ellipsis
+			call.Args[len(call.Args)-1] = appendCall
+		}
+	} else {
+		// No spread: simply append new args
+		call.Args = append(call.Args, newArgs...)
+	}
 }
 
 // createServerInterceptorArgs creates server interceptor options.

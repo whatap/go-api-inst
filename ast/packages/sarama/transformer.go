@@ -67,34 +67,56 @@ func (t *Transformer) Inject(file *dst.File) (bool, error) {
 			continue
 		}
 
+		// First pass: find all NewConfig() calls in this function
+		var configVars []string
+		var configIndices []int
+		for i, stmt := range fn.Body.List {
+			if configVar := t.getSaramaNewConfigVar(stmt, pkgName); configVar != "" {
+				configVars = append(configVars, configVar)
+				configIndices = append(configIndices, i)
+			}
+		}
+
+		// Skip if no NewConfig() calls
+		if len(configVars) == 0 {
+			continue
+		}
+
+		// Second pass: build new statement list
+		// Add interceptor declaration once at the beginning (after first NewConfig)
 		var newList []dst.Stmt
-		for _, stmt := range fn.Body.List {
+		interceptorDeclared := false
+
+		for i, stmt := range fn.Body.List {
 			newList = append(newList, stmt)
 
-			// Check if this is config := sarama.NewConfig()
+			// Check if this is a NewConfig() call
 			configVar := t.getSaramaNewConfigVar(stmt, pkgName)
 			if configVar == "" {
 				continue
 			}
 
-			// Add: whatapInterceptor := &whatapsarama.Interceptor{}
-			interceptorVarStmt := &dst.AssignStmt{
-				Lhs: []dst.Expr{dst.NewIdent("whatapInterceptor")},
-				Tok: token.DEFINE,
-				Rhs: []dst.Expr{
-					&dst.UnaryExpr{
-						Op: token.AND,
-						X: &dst.CompositeLit{
-							Type: &dst.SelectorExpr{
-								X:   dst.NewIdent("whatapsarama"),
-								Sel: dst.NewIdent("Interceptor"),
+			// Add interceptor declaration only once (after first NewConfig)
+			if !interceptorDeclared {
+				interceptorVarStmt := &dst.AssignStmt{
+					Lhs: []dst.Expr{dst.NewIdent("whatapInterceptor")},
+					Tok: token.DEFINE,
+					Rhs: []dst.Expr{
+						&dst.UnaryExpr{
+							Op: token.AND,
+							X: &dst.CompositeLit{
+								Type: &dst.SelectorExpr{
+									X:   dst.NewIdent("whatapsarama"),
+									Sel: dst.NewIdent("Interceptor"),
+								},
 							},
 						},
 					},
-				},
+				}
+				interceptorVarStmt.Decs.After = dst.NewLine
+				newList = append(newList, interceptorVarStmt)
+				interceptorDeclared = true
 			}
-			interceptorVarStmt.Decs.After = dst.NewLine
-			newList = append(newList, interceptorVarStmt)
 
 			// Add: config.Producer.Interceptors = []sarama.ProducerInterceptor{whatapInterceptor}
 			producerStmt := &dst.AssignStmt{
@@ -150,6 +172,7 @@ func (t *Transformer) Inject(file *dst.File) (bool, error) {
 			consumerStmt.Decs.After = dst.NewLine
 			newList = append(newList, consumerStmt)
 			t.transformed = true
+			_ = i // suppress unused variable warning
 		}
 		fn.Body.List = newList
 	}
