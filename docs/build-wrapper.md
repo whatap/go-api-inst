@@ -9,58 +9,30 @@ Wraps `go` commands to automatically inject instrumentation code.
 whatap-go-inst go build ./...
 ```
 
+---
+
 ## How It Works
 
-```
-┌─────────────────────────────────────────────────────────────┐
-│  whatap-go-inst go build ./...                              │
-└─────────────────────┬───────────────────────────────────────┘
-                      │
-                      ▼
-┌─────────────────────────────────────────────────────────────┐
-│  1. Copy source to temp directory                           │
-│  2. Inject instrumentation code                             │
-│  3. go get github.com/whatap/go-api@latest                  │
-│  4. go mod tidy                                             │
-│  5. go build                                                │
-│  6. Save transformed source in whatap-instrumented/         │
-└─────────────────────────────────────────────────────────────┘
-```
+1. Copy source to temp directory
+2. Inject instrumentation code
+3. `go get github.com/whatap/go-api@latest` + `go mod tidy`
+4. Execute specified go command
+5. Save transformed source in `whatap-instrumented/` (unless `--no-output`)
+6. Delete temp directory
 
-## Key Features
+**Key characteristics:**
+- No init required — just build
+- Original go.mod is not modified (everything runs in temp directory)
+- Latest go-api version is automatically downloaded
+- `whatap-instrumented/` directory shows transformed source for debugging
 
-1. **No init required**
-   - Just run `whatap-go-inst go build ./...`
-   - Dependencies are automatically added
-
-2. **Original go.mod is not modified**
-   - `go get`, `go mod tidy` only run in temp folder
-   - Original source remains unchanged
-
-3. **Downloads @latest every time**
-   - `go get github.com/whatap/go-api@latest` runs automatically
-   - New go-api versions are automatically applied
-
-4. **whatap-instrumented/ directory created**
-   - Can check transformed source code
-   - Useful for debugging
-   - Use `--no-output` to disable
+---
 
 ## Usage
 
-### Recommended Workflow
+### Build
 
 ```bash
-# Just build (no setup required)
-whatap-go-inst go build ./...
-```
-
-### Basic Build
-
-```bash
-# Build current directory
-whatap-go-inst go build .
-
 # Build all packages
 whatap-go-inst go build ./...
 
@@ -77,40 +49,26 @@ whatap-go-inst --output ./instrumented go build ./...
 ### Run
 
 ```bash
-# Direct run
 whatap-go-inst go run .
-
-# Pass arguments
 whatap-go-inst go run . --port 8080
 ```
 
 ### Test
 
 ```bash
-# All tests
 whatap-go-inst go test ./...
-
-# Specific test
 whatap-go-inst go test -v -run TestName ./pkg/...
 ```
 
-### Install
-
-```bash
-whatap-go-inst go install ./...
-```
+---
 
 ## Example
-
-### Gin Application
 
 **Original code (main.go):**
 ```go
 package main
 
-import (
-    "github.com/gin-gonic/gin"
-)
+import "github.com/gin-gonic/gin"
 
 func main() {
     r := gin.Default()
@@ -139,8 +97,8 @@ import (
 func main() {
     trace.Init(nil)
     defer trace.Shutdown()
-
     r := gin.Default()
+    r.Use(whatapgin.Middleware())
     r.GET("/", func(c *gin.Context) {
         c.JSON(200, gin.H{"message": "hello"})
     })
@@ -148,146 +106,64 @@ func main() {
 }
 ```
 
-## Debug Mode
+---
 
-Set environment variable to see debug output:
+## Dockerfile
+
+```dockerfile
+# Stage 1: Build with instrumentation
+FROM golang:1.21-alpine AS builder
+
+# Install whatap-go-inst
+RUN wget -qO- https://github.com/whatap/go-api-inst/releases/latest/download/whatap-go-inst_linux_amd64.tar.gz | tar xz -C /usr/local/bin/
+
+WORKDIR /app
+COPY . .
+
+# Build with instrumentation
+RUN whatap-go-inst go build -o /app/server .
+
+# Stage 2: Run with WhaTap agent
+FROM alpine:latest
+
+# Install WhaTap agent
+RUN wget -qO- https://s3.ap-northeast-2.amazonaws.com/repo.whatap.io/alpine/x86_64/whatap-agent.tar.gz | tar xz -C /
+
+WORKDIR /app
+COPY --from=builder /app/server .
+
+# WhaTap config
+RUN echo "license=your-license-key" > whatap.conf && \
+    echo "whatap.server.host=13.124.11.223" >> whatap.conf && \
+    echo "app_name=myapp" >> whatap.conf
+
+ENV WHATAP_HOME=/app
+
+EXPOSE 8080
+CMD ["/bin/sh", "-c", "/usr/whatap/agent/whatap-agent start && ./server"]
+```
+
+> Get `license` and `whatap.server.host` from [WhaTap Console](https://service.whatap.io) after creating a project.
+
+---
+
+## Debug Mode
 
 ```bash
 GO_API_AST_DEBUG=1 whatap-go-inst go build ./...
 ```
 
-Output example:
-```
-[whatap-go-inst] output: /tmp/go-build123/main.a
-[whatap-go-inst] transformed: [/tmp/whatap-go-inst-456/main.go]
-```
+---
 
-## Advantages
+## Notes
 
-| Advantage | Description |
-|-----------|-------------|
-| **Simple** | Just add `whatap-go-inst` before command |
-| **Preserves original** | Source code is not modified at all |
-| **Selective** | Use only when instrumentation is needed |
-| **CI/CD friendly** | On/off control via environment variables |
-
-## Disadvantages
-
-| Disadvantage | Description |
-|--------------|-------------|
-| **Build time increase** | Overhead from AST transformation |
-| **Requires whatap-go-inst** | Tool must be installed in build environment |
-
-## CI/CD Configuration Examples
-
-### GitHub Actions
-
-```yaml
-name: Build with Instrumentation
-
-on: [push]
-
-jobs:
-  build:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v3
-
-      - uses: actions/setup-go@v4
-        with:
-          go-version: '1.21'
-
-      - name: Install whatap-go-inst
-        run: go install github.com/whatap/go-api-inst/cmd/whatap-go-inst@latest
-
-      - name: Build with instrumentation
-        run: whatap-go-inst go build -o myapp ./...
-
-      - name: Upload artifact
-        uses: actions/upload-artifact@v3
-        with:
-          name: myapp
-          path: myapp
-```
-
-### Dockerfile
-
-```dockerfile
-FROM golang:1.21 AS builder
-
-WORKDIR /app
-COPY . .
-
-# Install whatap-go-inst
-RUN go install github.com/whatap/go-api-inst/cmd/whatap-go-inst@latest
-
-# Build with instrumentation
-RUN whatap-go-inst go build -o /app/myapp .
-
-FROM alpine:latest
-COPY --from=builder /app/myapp /usr/local/bin/
-CMD ["myapp"]
-```
-
-## Troubleshooting
-
-### No Dependency Error
-
-**Symptom:**
-```
-Error: github.com/whatap/go-api not found in go.mod.
-```
-
-**Cause:**
-- go.mod doesn't have whatap/go-api dependency
-
-**Solution:**
-
-Add dependency first:
-```bash
-go get github.com/whatap/go-api@latest
-whatap-go-inst go build ./...
-```
-
-### Switching from Manual to Automatic Instrumentation
-
-If you previously added go-api code manually:
-
-```bash
-# 1. Remove existing whatap code
-whatap-go-inst remove -s . -o ./cleaned
-
-# 2. Check diff (ensure no custom code is lost)
-diff -r . ./cleaned
-
-# 3. Replace if no issues
-cp -r ./cleaned/* ./
-
-# 4. Switch to automatic instrumentation
-whatap-go-inst go build ./...
-```
-
-**Note:** Standard patterns (middleware, sql.Open, etc.) are auto-removed, but custom code (trace.Start, etc.) requires manual review.
-
-### Build Cache Issues
-
-**Symptom:**
-- Code changes not reflected
-
-**Solution:**
-```bash
-go clean -cache
-whatap-go-inst go build ./...
-```
-
-## Important Notes
-
-1. **External packages are not transformed**: Packages in GOMODCACHE are skipped.
+1. **External packages are not transformed by default**: Use `--external-module` to instrument specific GOMODCACHE modules. See [Multi-Module Projects](./multi-module.md).
 2. **Standard library is not transformed**: Packages in GOROOT are skipped.
 3. **Test files are not transformed**: `_test.go` files are skipped.
-4. **Pre-add dependency required**: Run `go get github.com/whatap/go-api@latest` first.
+
+---
 
 ## Next Steps
 
-- [Direct Source Modification Mode](./source-inject.md)
+- [Source Inject Mode](./source-inject.md) — Direct source modification
 - [Multi-Module Projects](./multi-module.md)

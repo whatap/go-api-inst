@@ -54,21 +54,21 @@ func (t *Transformer) isV8(file *dst.File) bool {
 	return false
 }
 
+// SupportedVersions returns the supported major versions for go-redis (new path).
+// "v9" = github.com/redis/go-redis/v9.
+func (t *Transformer) SupportedVersions() []string {
+	return []string{"v9"}
+}
+
 // Detect checks if the file uses go-redis (v8 or v9 only).
 // Note: v7 and earlier are not supported by whatapgoredis.
 func (t *Transformer) Detect(file *dst.File) bool {
-	for _, imp := range file.Imports {
-		path := strings.Trim(imp.Path.Value, `"`)
-		// github.com/redis/go-redis/v9 (new path)
-		if strings.HasPrefix(path, "github.com/redis/go-redis") {
-			return true
-		}
-		// github.com/go-redis/redis/v8 (old path, v8 only)
-		if strings.HasPrefix(path, "github.com/go-redis/redis/v8") {
-			return true
-		}
+	// v9 (new path): github.com/redis/go-redis/v9
+	if common.HasSupportedImport(file, "github.com/redis/go-redis", t.SupportedVersions()) {
+		return true
 	}
-	return false
+	// v8 (old path): github.com/go-redis/redis/v8
+	return common.HasSupportedImport(file, "github.com/go-redis/redis", []string{"v8"})
 }
 
 // redisFuncs is the list of go-redis functions to transform.

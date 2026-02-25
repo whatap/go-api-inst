@@ -36,6 +36,9 @@ var (
 	// fastMode --fast flag (use toolexec, requires init)
 	fastMode bool
 
+	// externalModules --external-module flag (external modules to instrument, §138)
+	externalModules []string
+
 	// globalConfig loaded configuration (used by subcommands)
 	globalConfig *config.Config
 
@@ -135,6 +138,7 @@ func init() {
 	rootCmd.PersistentFlags().BoolVar(&noOutput, "no-output", false, "Do not save instrumented source")
 	rootCmd.PersistentFlags().BoolVar(&errorTracking, "error-tracking", false, "Enable error tracking code injection")
 	rootCmd.PersistentFlags().BoolVar(&fastMode, "fast", false, "Fast mode (use toolexec, requires init)")
+	rootCmd.PersistentFlags().StringSliceVar(&externalModules, "external-module", nil, "External module to instrument from GOMODCACHE (repeatable, comma-separated)")
 }
 
 // InitReport initializes report (called from subcommands)
@@ -174,6 +178,10 @@ func loadDependencies(r *report.Report, baseDir string) {
 		infos[i] = report.TransformerInfo{
 			Name:       t.Name(),
 			ImportPath: t.ImportPath(),
+		}
+		// §148: Pass SupportedVersions if transformer implements VersionedTransformer
+		if vt, ok := t.(common.VersionedTransformer); ok {
+			infos[i].SupportedVersions = vt.SupportedVersions()
 		}
 	}
 

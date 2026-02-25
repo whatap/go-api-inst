@@ -51,8 +51,8 @@ func (t *Transformer) Detect(file *dst.File) bool {
 		return hasHttpClientCalls(file, pkgName)
 	}
 
-	// Only detect if there are actual handler calls or client calls
-	return hasHttpHandlerCalls(file) || hasHttpClientCalls(file, pkgName)
+	// Only detect if there are actual handler calls, client calls, or server literals
+	return hasHttpHandlerCalls(file) || hasHttpClientCalls(file, pkgName) || hasHttpServerLiterals(file, pkgName)
 }
 
 // Inject adds net/http handler and client instrumentation.
@@ -67,6 +67,7 @@ func (t *Transformer) Inject(file *dst.File) (bool, error) {
 	}
 
 	t.injectHandlers(file)
+	t.injectServerHandlers(file, pkgName)
 	t.injectClients(file, pkgName)
 
 	// Remove net/http import if no longer used after transformation (§59/§60 fix)
@@ -81,13 +82,13 @@ func (t *Transformer) Inject(file *dst.File) (bool, error) {
 // Remove removes net/http instrumentation.
 func (t *Transformer) Remove(file *dst.File) error {
 	t.removeHandlerWrappers(file)
+	t.removeServerHandlerWrappers(file)
 	t.removeClientWrappers(file)
 	t.removePackageLevelClients(file) // §80 fix: package-level http.Client{}
 	return nil
 }
 
-// injectHandlers wraps HandleFunc calls with whataphttp.Func.
-// NOTE: Handle() is not supported because whataphttp.Handler doesn't exist in go-api.
+// injectHandlers wraps HandleFunc/Handle calls with whataphttp.Func/WrapHandler.
 func (t *Transformer) injectHandlers(file *dst.File) {
 	for _, decl := range file.Decls {
 		fn, ok := decl.(*dst.FuncDecl)
@@ -112,9 +113,13 @@ func (t *Transformer) injectHandlers(file *dst.File) {
 			}
 
 			methodName := sel.Sel.Name
-			// NOTE: Only HandleFunc is supported. Handle() requires whataphttp.Handler
-			// which doesn't exist in go-api yet. See ISSUES.md §56.
-			if methodName != "HandleFunc" {
+			var wrapFunc string
+			switch methodName {
+			case "HandleFunc":
+				wrapFunc = "Func"
+			case "Handle":
+				wrapFunc = "WrapHandler"
+			default:
 				return true
 			}
 
@@ -127,9 +132,6 @@ func (t *Transformer) injectHandlers(file *dst.File) {
 			if isAlreadyWrappedWithWhataphttp(handlerArg) {
 				return true
 			}
-
-			// HandleFunc → whataphttp.Func
-			wrapFunc := "Func"
 
 			wrappedHandler := &dst.CallExpr{
 				Fun: &dst.SelectorExpr{
@@ -842,6 +844,316 @@ func hasHttpClientCalls(file *dst.File, pkgName string) bool {
 		})
 	}
 	return found
+}
+
+// hasHttpServerLiterals checks if file has http.Server{Handler: ...} literals.
+// pkgName is the actual package name used in code (could be alias).
+func hasHttpServerLiterals(file *dst.File, pkgName string) bool {
+	found := false
+
+	// Check package-level http.Server{} declarations
+	for _, decl := range file.Decls {
+		if found {
+			break
+		}
+		genDecl, ok := decl.(*dst.GenDecl)
+		if !ok || genDecl.Tok != token.VAR {
+			continue
+		}
+		for _, spec := range genDecl.Specs {
+			valueSpec, ok := spec.(*dst.ValueSpec)
+			if !ok {
+				continue
+			}
+			for _, value := range valueSpec.Values {
+				if isHttpServerWithHandler(value, pkgName) {
+					found = true
+					break
+				}
+			}
+		}
+	}
+
+	if found {
+		return true
+	}
+
+	// Check function bodies
+	for _, decl := range file.Decls {
+		fn, ok := decl.(*dst.FuncDecl)
+		if !ok || fn.Body == nil {
+			continue
+		}
+
+		dst.Inspect(fn.Body, func(n dst.Node) bool {
+			if found {
+				return false
+			}
+			if isHttpServerWithHandler(n, pkgName) {
+				found = true
+				return false
+			}
+			return true
+		})
+	}
+	return found
+}
+
+// isHttpServerWithHandler checks if a node is http.Server{Handler: <non-nil>}.
+func isHttpServerWithHandler(n dst.Node, pkgName string) bool {
+	var compositeLit *dst.CompositeLit
+	if unary, ok := n.(*dst.UnaryExpr); ok && unary.Op == token.AND {
+		if cl, ok := unary.X.(*dst.CompositeLit); ok {
+			compositeLit = cl
+		}
+	} else if cl, ok := n.(*dst.CompositeLit); ok {
+		compositeLit = cl
+	}
+
+	if compositeLit == nil {
+		return false
+	}
+
+	sel, ok := compositeLit.Type.(*dst.SelectorExpr)
+	if !ok {
+		return false
+	}
+	ident, ok := sel.X.(*dst.Ident)
+	if !ok || ident.Name != pkgName || sel.Sel.Name != "Server" {
+		return false
+	}
+
+	// Check if Handler field exists and is non-nil
+	for _, elt := range compositeLit.Elts {
+		kv, ok := elt.(*dst.KeyValueExpr)
+		if !ok {
+			continue
+		}
+		keyIdent, ok := kv.Key.(*dst.Ident)
+		if !ok || keyIdent.Name != "Handler" {
+			continue
+		}
+		// Skip if Handler: nil
+		if ident, ok := kv.Value.(*dst.Ident); ok && ident.Name == "nil" {
+			return false
+		}
+		return true
+	}
+	return false
+}
+
+// injectServerHandlers wraps http.Server{Handler: handler} with whataphttp.WrapHandler.
+func (t *Transformer) injectServerHandlers(file *dst.File, pkgName string) {
+	// Skip if framework imports exist (framework middleware handles transactions)
+	frameworkImports := []string{
+		"github.com/gin-gonic/gin",
+		"github.com/labstack/echo",
+		"github.com/go-chi/chi",
+		"github.com/gofiber/fiber",
+		"github.com/gorilla/mux",
+	}
+	for _, imp := range frameworkImports {
+		if common.HasImportPrefix(file, imp) {
+			return
+		}
+	}
+
+	// Skip if HandleFunc/Handle calls exist (individual handler wrapping already works)
+	if hasHttpHandlerCalls(file) {
+		return
+	}
+
+	// Process function bodies
+	for _, decl := range file.Decls {
+		fn, ok := decl.(*dst.FuncDecl)
+		if !ok || fn.Body == nil {
+			continue
+		}
+
+		dst.Inspect(fn.Body, func(n dst.Node) bool {
+			t.wrapServerHandler(n, pkgName)
+			return true
+		})
+	}
+
+	// Process package-level declarations
+	for _, decl := range file.Decls {
+		genDecl, ok := decl.(*dst.GenDecl)
+		if !ok || genDecl.Tok != token.VAR {
+			continue
+		}
+
+		for _, spec := range genDecl.Specs {
+			valueSpec, ok := spec.(*dst.ValueSpec)
+			if !ok {
+				continue
+			}
+
+			for _, value := range valueSpec.Values {
+				t.wrapServerHandler(value, pkgName)
+			}
+		}
+	}
+}
+
+// wrapServerHandler wraps a single http.Server{Handler: handler} node.
+func (t *Transformer) wrapServerHandler(n dst.Node, pkgName string) {
+	var compositeLit *dst.CompositeLit
+	if unary, ok := n.(*dst.UnaryExpr); ok && unary.Op == token.AND {
+		if cl, ok := unary.X.(*dst.CompositeLit); ok {
+			compositeLit = cl
+		}
+	} else if cl, ok := n.(*dst.CompositeLit); ok {
+		compositeLit = cl
+	}
+
+	if compositeLit == nil {
+		return
+	}
+
+	sel, ok := compositeLit.Type.(*dst.SelectorExpr)
+	if !ok {
+		return
+	}
+	ident, ok := sel.X.(*dst.Ident)
+	if !ok || ident.Name != pkgName || sel.Sel.Name != "Server" {
+		return
+	}
+
+	for _, elt := range compositeLit.Elts {
+		kv, ok := elt.(*dst.KeyValueExpr)
+		if !ok {
+			continue
+		}
+		keyIdent, ok := kv.Key.(*dst.Ident)
+		if !ok || keyIdent.Name != "Handler" {
+			continue
+		}
+
+		// Skip if Handler: nil
+		if valIdent, ok := kv.Value.(*dst.Ident); ok && valIdent.Name == "nil" {
+			return
+		}
+
+		// Skip if already wrapped
+		if isHttpServerHandlerAlreadyWrapped(kv) {
+			return
+		}
+
+		// Wrap: Handler: expr → Handler: whataphttp.WrapHandler(expr)
+		kv.Value = &dst.CallExpr{
+			Fun: &dst.SelectorExpr{
+				X:   dst.NewIdent("whataphttp"),
+				Sel: dst.NewIdent("WrapHandler"),
+			},
+			Args: []dst.Expr{dst.Clone(kv.Value).(dst.Expr)},
+		}
+		t.transformed = true
+		return
+	}
+}
+
+// isHttpServerHandlerAlreadyWrapped checks if Handler field is already wrapped with whataphttp.WrapHandler.
+func isHttpServerHandlerAlreadyWrapped(kv *dst.KeyValueExpr) bool {
+	call, ok := kv.Value.(*dst.CallExpr)
+	if !ok {
+		return false
+	}
+	sel, ok := call.Fun.(*dst.SelectorExpr)
+	if !ok {
+		return false
+	}
+	ident, ok := sel.X.(*dst.Ident)
+	if !ok {
+		return false
+	}
+	return ident.Name == "whataphttp" && sel.Sel.Name == "WrapHandler"
+}
+
+// removeServerHandlerWrappers removes whataphttp.WrapHandler from http.Server{Handler: ...}.
+func (t *Transformer) removeServerHandlerWrappers(file *dst.File) {
+	// Process function bodies
+	for _, decl := range file.Decls {
+		fn, ok := decl.(*dst.FuncDecl)
+		if !ok || fn.Body == nil {
+			continue
+		}
+
+		dst.Inspect(fn.Body, func(n dst.Node) bool {
+			t.unwrapServerHandler(n)
+			return true
+		})
+	}
+
+	// Process package-level declarations
+	for _, decl := range file.Decls {
+		genDecl, ok := decl.(*dst.GenDecl)
+		if !ok || genDecl.Tok != token.VAR {
+			continue
+		}
+
+		for _, spec := range genDecl.Specs {
+			valueSpec, ok := spec.(*dst.ValueSpec)
+			if !ok {
+				continue
+			}
+
+			for _, value := range valueSpec.Values {
+				t.unwrapServerHandler(value)
+			}
+		}
+	}
+}
+
+// unwrapServerHandler restores a single http.Server{Handler: whataphttp.WrapHandler(h)} → Handler: h.
+func (t *Transformer) unwrapServerHandler(n dst.Node) {
+	var compositeLit *dst.CompositeLit
+	if unary, ok := n.(*dst.UnaryExpr); ok && unary.Op == token.AND {
+		if cl, ok := unary.X.(*dst.CompositeLit); ok {
+			compositeLit = cl
+		}
+	} else if cl, ok := n.(*dst.CompositeLit); ok {
+		compositeLit = cl
+	}
+
+	if compositeLit == nil {
+		return
+	}
+
+	// Check type is *.Server (any package name)
+	sel, ok := compositeLit.Type.(*dst.SelectorExpr)
+	if !ok || sel.Sel.Name != "Server" {
+		return
+	}
+
+	for _, elt := range compositeLit.Elts {
+		kv, ok := elt.(*dst.KeyValueExpr)
+		if !ok {
+			continue
+		}
+		keyIdent, ok := kv.Key.(*dst.Ident)
+		if !ok || keyIdent.Name != "Handler" {
+			continue
+		}
+
+		// Check if whataphttp.WrapHandler(originalHandler)
+		call, ok := kv.Value.(*dst.CallExpr)
+		if !ok {
+			return
+		}
+		callSel, ok := call.Fun.(*dst.SelectorExpr)
+		if !ok {
+			return
+		}
+		callIdent, ok := callSel.X.(*dst.Ident)
+		if !ok {
+			return
+		}
+		if callIdent.Name == "whataphttp" && callSel.Sel.Name == "WrapHandler" && len(call.Args) == 1 {
+			kv.Value = dst.Clone(call.Args[0]).(dst.Expr)
+		}
+		return
+	}
 }
 
 // detectHandlerContext detects the context source from handler function parameters.

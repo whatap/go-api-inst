@@ -46,7 +46,7 @@ rdb := whatapgoredis.NewClient(&redis.Options{
 })
 ```
 
-> **Note**: Both `github.com/go-redis/redis` (old path) and `github.com/redis/go-redis` (new path) are supported.
+> **Note**: Only v8 (`github.com/go-redis/redis/v8`) and v9 (`github.com/redis/go-redis/v9`) are supported. v7 and earlier, v10+ are not supported and will be skipped.
 
 ---
 
@@ -138,7 +138,7 @@ record, err := whatapsql.Wrap(context.Background(), "aerospike", "Get", func() (
 | `BatchGet`, `BatchGetHeader` | `Wrap` | `([]*Record, error)` |
 | `Query`, `ScanAll`, `ScanNode` | `Wrap` | `(*Recordset, error)` |
 
-> **Note**: go/types is used to automatically infer return types. Both v6 and v8 versions are supported.
+> **Note**: go/types is used to automatically infer return types. Only v6 and v8 are supported. v5 and earlier, v7, v9+ are not supported and will be skipped.
 
 ---
 
@@ -170,6 +170,22 @@ producer, err := sarama.NewSyncProducer(brokers, config)
 ```
 
 > **Note**: Both IBM/sarama and Shopify/sarama are supported. The correct whatapsarama is automatically selected based on the original import path.
+
+### WrapConfig
+
+As an alternative to direct Interceptor insertion, `WrapConfig` wraps the config instance:
+
+```go
+// Before
+config := sarama.NewConfig()
+
+// After
+config := whatapsarama.WrapConfig(sarama.NewConfig())
+```
+
+**Signature**: `whatapsarama.WrapConfig(*sarama.Config) *sarama.Config`
+
+> **Note**: `WrapConfig` internally sets `config.Producer.Interceptors` and returns the config. Used for struct field initialization and return statement patterns.
 
 ---
 

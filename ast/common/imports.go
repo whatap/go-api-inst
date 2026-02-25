@@ -143,12 +143,80 @@ func HasImport(file *dst.File, importPath string) bool {
 	return false
 }
 
+// HasImportWithAlias checks if an import with a specific alias exists.
+func HasImportWithAlias(file *dst.File, importPath, alias string) bool {
+	path := strings.Trim(importPath, `"`)
+	for _, imp := range file.Imports {
+		if strings.Trim(imp.Path.Value, `"`) == path {
+			if imp.Name != nil && imp.Name.Name == alias {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 // HasImportPrefix checks if an import starting with a specific prefix exists.
 func HasImportPrefix(file *dst.File, prefix string) bool {
 	for _, imp := range file.Imports {
 		path := strings.Trim(imp.Path.Value, `"`)
 		if strings.HasPrefix(path, prefix) {
 			return true
+		}
+	}
+	return false
+}
+
+// HasSupportedImport checks if a file imports a package with a supported major version.
+// supportedVersions: list of supported version suffixes (e.g., ["", "v4"]).
+// "" matches imports without version suffix (e.g., github.com/labstack/echo).
+// "v4" matches github.com/labstack/echo/v4 and sub-packages.
+func HasSupportedImport(file *dst.File, importPrefix string, supportedVersions []string) bool {
+	for _, imp := range file.Imports {
+		path := strings.Trim(imp.Path.Value, `"`)
+		if !strings.HasPrefix(path, importPrefix) {
+			continue
+		}
+
+		// Extract the suffix after the prefix
+		suffix := strings.TrimPrefix(path, importPrefix)
+
+		// Exact match (no suffix) → version is ""
+		if suffix == "" {
+			for _, v := range supportedVersions {
+				if v == "" {
+					return true
+				}
+			}
+			continue
+		}
+
+		// Must start with "/" for sub-path
+		if suffix[0] != '/' {
+			continue
+		}
+		suffix = suffix[1:] // remove leading "/"
+
+		// Extract the first path segment after prefix
+		firstSeg := suffix
+		if idx := strings.Index(suffix, "/"); idx >= 0 {
+			firstSeg = suffix[:idx]
+		}
+
+		// Check if firstSeg is a version suffix
+		if isVersionSuffix(firstSeg) {
+			for _, v := range supportedVersions {
+				if v == firstSeg {
+					return true
+				}
+			}
+		} else {
+			// Not a version suffix (e.g., sub-package) → version is ""
+			for _, v := range supportedVersions {
+				if v == "" {
+					return true
+				}
+			}
 		}
 	}
 	return false

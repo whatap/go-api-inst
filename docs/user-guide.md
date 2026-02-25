@@ -2,22 +2,6 @@
 
 CLI tool for automatically injecting WhaTap monitoring code into Go applications.
 
-## Table of Contents
-
-- [System Requirements](#system-requirements)
-- [Installation](#installation)
-- [Quick Start](#quick-start)
-- [Global Options](#global-options)
-- [Command Reference](#command-reference)
-- [Execution Modes](#execution-modes)
-- [Supported Frameworks](#supported-frameworks)
-- [Environment Variables](#environment-variables)
-- [Injected Code](#injected-code)
-- [Limitations and Notes](#limitations-and-notes)
-- [Migration from Manual to Auto Instrumentation](#migration-from-manual-to-auto-instrumentation)
-- [Troubleshooting](#troubleshooting)
-- [Multi-Module Projects](#multi-module-projects)
-
 ---
 
 ## System Requirements
@@ -34,21 +18,7 @@ CLI tool for automatically injecting WhaTap monitoring code into Go applications
 
 ## Installation
 
-### Method 1: go install (Go 1.21+)
-
-For Go 1.21+, toolchain auto-download is supported.
-
-```bash
-# Official binary
-go install github.com/whatap/go-api-inst/cmd/whatap-go-inst@latest
-
-# Short binary name
-go install github.com/whatap/go-api-inst/cmd/goinst@latest
-```
-
-### Method 2: Direct Binary Download (Linux)
-
-For Go 1.18~1.20 users or to use without Go installation:
+### Method 1: Direct Binary Download (Recommended)
 
 ```bash
 # Linux (amd64)
@@ -60,7 +30,15 @@ curl -sSL https://github.com/whatap/go-api-inst/releases/latest/download/whatap-
 sudo mv whatap-go-inst /usr/local/bin/
 ```
 
-> **macOS/Windows**: Use the `go install` method.
+### Method 2: go install (Go 1.21+)
+
+```bash
+# Official binary
+go install github.com/whatap/go-api-inst/cmd/whatap-go-inst@latest
+
+# Short binary name
+go install github.com/whatap/go-api-inst/cmd/goinst@latest
+```
 
 ### Verify Installation
 
@@ -69,15 +47,6 @@ whatap-go-inst version
 
 # Or short command
 goinst version
-```
-
-After installation:
-```bash
-# Use instead of regular go build
-whatap-go-inst go build ./...
-
-# Or short command
-goinst go build ./...
 ```
 
 ### Build from Source
@@ -91,8 +60,6 @@ go build -o whatap-go-inst .
 ---
 
 ## Quick Start
-
-### Build (Recommended)
 
 ```bash
 # Build (no init required)
@@ -112,31 +79,18 @@ This approach:
 
 ## Global Options
 
-Common options available for all commands.
-
 | Option | Short | Default | Description |
 |--------|-------|---------|-------------|
 | `--config` | | `.whatap/config.yaml` | Config file path |
 | `--verbose` | `-v` | `false` | Verbose output (includes transformation details) |
 | `--quiet` | `-q` | `false` | Summary only |
 | `--report` | | | JSON report file path |
-
-### Output Levels
-
-```bash
-# Default output
-whatap-go-inst inject -s ./src -o ./output
-
-# Verbose output (per-file transformation details)
-whatap-go-inst inject -s ./src -o ./output -v
-
-# Summary only
-whatap-go-inst inject -s ./src -o ./output -q
-```
+| `--output` | | `whatap-instrumented/` | Instrumented source output directory |
+| `--no-output` | | `false` | Do not save instrumented source |
+| `--error-tracking` | | `false` | Inject error tracking code (`trace.Error` in `if err != nil` patterns) |
+| `--external-module` | | | External module to instrument from GOMODCACHE (repeatable, comma-separated, wildcard supported) |
 
 ### JSON Report
-
-Save JSON format reports for analysis or CI/CD integration.
 
 ```bash
 whatap-go-inst inject -s ./src -o ./output --report=report.json
@@ -177,16 +131,6 @@ Wraps go commands to auto-inject monitoring code during build.
 whatap-go-inst [global-options] go <command> [arguments]
 ```
 
-#### Global Options (before `go`)
-
-| Option | Short | Description |
-|--------|-------|-------------|
-| `--output` | | Instrumented source save path (default: whatap-instrumented/) |
-| `--no-output` | | Do not save instrumented source |
-| `--error-tracking` | | Inject error tracking code (adds `trace.Error` to `if err != nil` patterns) |
-
-#### Supported Commands
-
 | Command | Description | Example |
 |---------|-------------|---------|
 | `build` | Build | `whatap-go-inst go build ./...` |
@@ -197,18 +141,14 @@ whatap-go-inst [global-options] go <command> [arguments]
 #### Examples
 
 ```bash
-# Build entire project (no init required)
+# Build entire project
 whatap-go-inst go build ./...
-
-# Build specific file
-whatap-go-inst go build ./main.go
 
 # Specify output file
 whatap-go-inst go build -o myapp .
 
 # Run directly
 whatap-go-inst go run .
-whatap-go-inst go run main.go
 
 # Run tests
 whatap-go-inst go test ./...
@@ -221,17 +161,24 @@ whatap-go-inst --no-output go build ./...
 
 # Save instrumented source to custom path
 whatap-go-inst --output ./instrumented go build ./...
+
+# Instrument external module from GOMODCACHE
+whatap-go-inst --external-module=mycompany.com/internal/lib go build ./...
 ```
 
 #### Internal Operation
 
-1. Create temp directory (`whatap-go-inst-build-*`)
+1. Create temp directory
 2. Copy source files (`.go`, `go.mod`, `go.sum`)
-3. AST analysis and monitoring code injection
-4. Run `go mod tidy` (resolve dependencies)
-5. Execute specified go command
-6. Copy build artifacts (to original location)
-7. Delete temp directory
+3. If `--external-module` specified: copy modules from GOMODCACHE, inject, add `replace` directives
+4. AST analysis and monitoring code injection
+5. Run `go get github.com/whatap/go-api@latest` + `go mod tidy`
+6. Execute specified go command
+7. Copy build artifacts to original location
+8. Save instrumented source to `whatap-instrumented/` (unless `--no-output`)
+9. Delete temp directory
+
+> **Details**: [Build Wrapper Mode](./build-wrapper.md)
 
 ---
 
@@ -243,46 +190,25 @@ Injects monitoring code into source and outputs to separate directory.
 whatap-go-inst inject [flags]
 ```
 
-#### Flags
-
 | Flag | Short | Default | Description |
 |------|-------|---------|-------------|
 | `--src` | `-s` | `.` | Source path (file or directory) |
 | `--output` | `-o` | `./output` | Output directory |
 | `--error-tracking` | | `false` | Inject error tracking code |
-
-**Error Tracking Option**: By default, error tracking code is not injected. This prevents duplication since whatap packages already track errors internally. Use `--error-tracking` flag to also track errors in your business logic.
-
-#### Examples
+| `--external-module` | | | External module to instrument from GOMODCACHE |
 
 ```bash
 # Inject entire directory
 whatap-go-inst inject -s ./myapp -o ./myapp-instrumented
 
-# With error tracking code
-whatap-go-inst inject -s ./myapp -o ./myapp-instrumented --error-tracking
-
-# Single file injection
-whatap-go-inst inject -s ./main.go -o ./main_instrumented.go
-
-# Current directory (default)
-whatap-go-inst inject
-```
-
-#### Build After Injection
-
-```bash
-# 1. Inject code
-whatap-go-inst inject -s ./myapp -o ./output
-
-# 2. Add dependencies (in output directory)
-cd output
+# Build after injection
+cd myapp-instrumented
 go get github.com/whatap/go-api@latest
 go mod tidy
-
-# 3. Build
 go build -o ../myapp .
 ```
+
+> **Details**: [Source Inject Mode](./source-inject.md)
 
 ---
 
@@ -294,15 +220,11 @@ Removes injected monitoring code to restore original state.
 whatap-go-inst remove [flags]
 ```
 
-#### Flags
-
 | Flag | Short | Default | Description |
 |------|-------|---------|-------------|
 | `--src` | `-s` | `.` | Source path (file or directory) |
 | `--output` | `-o` | `./output` | Output directory |
 | `--all` | | `false` | Also remove manually injected patterns |
-
-#### Examples
 
 ```bash
 # Remove inject patterns only (default)
@@ -335,77 +257,14 @@ The `--all` option removes go-api code that users manually injected, in addition
 | Variable assignment/declaration | `ctx := trace.Start(...)` | Would break ctx usage |
 | Closure pattern | `whatapsql.Wrap(ctx, ..., func(){...})` | Contains business logic |
 | struct field | `Transport: whataphttp.NewRoundTripper(...)` | Need to restore field value |
-| Other whatap calls | `whatapsql.End(...)`, `httpc.End(...)` | Paired with Start |
-
-Non-removable patterns print warning messages and require manual handling.
-
-```bash
-# Warning message example
-Warning: main.go: Variable declaration: trace.Start(...) (manual removal required)
-Warning: db.go: Closure pattern: whatapsql.Wrap(...) (contains business logic, manual removal required)
-```
 
 ---
 
 ### `whatap-go-inst version` - Version Info
 
-Displays version information.
-
 ```bash
 whatap-go-inst version
 ```
-
-Output example:
-```
-whatap-go-inst version 0.5.0
-  Git commit: abc1234
-  Build date: 2026-01-22T10:00:00Z
-```
-
----
-
-## Execution Modes
-
-### Mode Comparison
-
-| Mode | Command | Source Changes | Auto Dependencies | Complexity | Recommended |
-|------|---------|----------------|-------------------|------------|-------------|
-| Build Wrapper | `whatap-go-inst go build` | No | Yes | Low | **Recommended** |
-| Source Modify | `whatap-go-inst inject` | Yes | No (manual) | Medium | Review needed |
-
-### 1. Build Wrapper Mode (Recommended)
-
-The simplest and recommended approach.
-
-```bash
-whatap-go-inst go build ./...
-whatap-go-inst go run .
-```
-
-**Advantages**:
-- No original source changes
-- No init required
-- Auto dependency resolution
-- Same usage as regular go commands
-
-### 2. Direct Source Modification Mode
-
-Generates transformed source in separate directory.
-
-```bash
-# Transform
-whatap-go-inst inject -s ./myapp -o ./output
-
-# Build
-cd output && go get github.com/whatap/go-api@latest && go build .
-```
-
-**Advantages**:
-- Easy before/after comparison
-- Original source preserved
-
-**Disadvantages**:
-- Manual steps required
 
 ---
 
@@ -418,33 +277,37 @@ cd output && go get github.com/whatap/go-api@latest && go build .
 | **Gin** | `github.com/gin-gonic/gin` | `r.Use(whatapgin.Middleware())` |
 | **Echo v4** | `github.com/labstack/echo/v4` | `e.Use(whatapecho.Middleware())` |
 | **Fiber v2** | `github.com/gofiber/fiber/v2` | `app.Use(whatapfiber.Middleware())` |
-| **Chi v5** | `github.com/go-chi/chi/v5` | `r.Use(whatapchi.Middleware)` |
-| **Gorilla Mux** | `github.com/gorilla/mux` | `r.Use(whatapmux.Middleware)` |
-| **net/http** | `net/http` | `whataphttp.Func()`, `whataphttp.Handler()` |
+| **Chi v5** | `github.com/go-chi/chi/v5` | `whatapchi.WrapRouter(chi.NewRouter())` |
+| **Gorilla Mux** | `github.com/gorilla/mux` | `whatapmux.WrapRouter(mux.NewRouter())` |
+| **net/http** | `net/http` | `whataphttp.Func()`, `whataphttp.WrapHandler()` |
 | **FastHTTP** | `github.com/valyala/fasthttp` | `whatapfasthttp.Middleware()` |
+
+> **Wrap Functions**: For struct field initialization and instance patterns,
+> framework-specific Wrap functions are available (e.g., `WrapEngine`, `WrapEcho`, `WrapApp`, `WrapRouter`, `WrapHandler`).
+> See [Instrumentation Rules](./rules/) for details.
 
 ### Database
 
 | Library | Import Path | Transformation |
 |---------|-------------|----------------|
-| **database/sql** | `database/sql` | `sql.Open()` -> `whatapsql.Open()` |
-| **sqlx** | `github.com/jmoiron/sqlx` | `sqlx.Open()` -> `whatapsqlx.Open()` |
-| **GORM (gorm.io)** | `gorm.io/gorm` | `gorm.Open()` -> `whatapgorm.Open()` |
-| **GORM (jinzhu)** | `github.com/jinzhu/gorm` | `gorm.Open()` -> `whatapgorm.Open()` |
+| **database/sql** | `database/sql` | `sql.Open()` → `whatapsql.Open()` |
+| **sqlx** | `github.com/jmoiron/sqlx` | `sqlx.Open()` → `whatapsqlx.Open()` |
+| **GORM (gorm.io)** | `gorm.io/gorm` | `gorm.Open()` → `whatapgorm.Open()` |
+| **GORM (jinzhu)** | `github.com/jinzhu/gorm` | `gorm.Open()` → `whatapgorm.Open()` |
 
 ### Redis
 
 | Library | Import Path | Transformation |
 |---------|-------------|----------------|
-| **go-redis v9** | `github.com/redis/go-redis/v9` | `redis.NewClient()` -> `whatapgoredis.NewClient()` |
-| **go-redis v8** | `github.com/go-redis/redis/v8` | `redis.NewClient()` -> `whatapgoredis.NewClient()` |
-| **Redigo** | `github.com/gomodule/redigo` | `redis.Dial()` -> `whatapredigo.Dial()` |
+| **go-redis v9** | `github.com/redis/go-redis/v9` | `redis.NewClient()` → `whatapgoredis.NewClient()` |
+| **go-redis v8** | `github.com/go-redis/redis/v8` | `redis.NewClient()` → `whatapgoredis.NewClient()` |
+| **Redigo** | `github.com/gomodule/redigo` | `redis.Dial()` → `whatapredigo.Dial()` |
 
 ### NoSQL / Cache
 
 | Library | Import Path | Transformation |
 |---------|-------------|----------------|
-| **MongoDB** | `go.mongodb.org/mongo-driver/mongo` | `mongo.Connect()` -> `whatapmongo.Connect()` |
+| **MongoDB** | `go.mongodb.org/mongo-driver/mongo` | `mongo.Connect()` → `whatapmongo.Connect()` |
 | **Aerospike** | `github.com/aerospike/aerospike-client-go` | Closure wrap with `whatapsql.Wrap()` |
 
 ### External Services
@@ -461,124 +324,23 @@ cd output && go get github.com/whatap/go-api@latest && go build .
 | Library | Import Path | Injected Code |
 |---------|-------------|---------------|
 | **log** | `log` | `log.SetOutput(logsink.GetTraceLogWriter(os.Stderr))` |
-| **logrus** | `github.com/sirupsen/logrus` | `logrus.SetOutput(logsink.GetTraceLogWriter(os.Stderr))` |
+| **logrus** | `github.com/sirupsen/logrus` | Hook-based + `WrapLogger()` for instances |
 | **zap** | `go.uber.org/zap` | `logsink.HookStderr()` |
 
 > **Note**: When logging libraries are instrumented, `@txid`, `@mtid`, `@gid` fields are automatically added to correlate transactions with logs.
 
----
+### Version Filtering
 
-## Log Collection Guide
+Unsupported framework versions are automatically skipped (not instrumented):
 
-WhaTap Go Agent collects logs in two ways.
+| Framework | Supported | Skipped |
+|-----------|-----------|---------|
+| Echo | v3, v4 | v5+ |
+| Fiber | v2 | v1, v3+ |
+| go-redis | v8, v9 | v7-, v10+ |
+| Aerospike | v6, v8 | v5-, v7, v9+ |
 
-### Recommended: TraceLogWriter (AST Auto Instrumentation)
-
-**Automatically injected by whatap-go-inst**. Recommended because it can correlate transactions with logs.
-
-```go
-// Code auto-injected by AST
-log.SetOutput(logsink.GetTraceLogWriter(os.Stderr))
-```
-
-| Advantage | Description |
-|-----------|-------------|
-| **Transaction correlation** | Logs include `@txid`, `@mtid`, `@gid` automatically |
-| **Performance** | No pipe overhead |
-| **Accuracy** | Each Write() call is one complete log message |
-
-**Supported libraries:**
-
-| Library | Method |
-|---------|--------|
-| log (standard) | `log.SetOutput(TraceLogWriter)` |
-| logrus | `logrus.SetOutput(TraceLogWriter)` |
-| zap | `logsink.HookStderr()` |
-| fmt | Convert to `whatapfmt.Print*()` |
-
-### Legacy: ProxyStream (stdout/stderr pipe)
-
-**Legacy method** that collects stdout/stderr without code changes. **Not recommended** due to difficulty in transaction correlation.
-
-```ini
-# whatap.conf (default: false recommended)
-logsink_stdout_enabled=false
-logsink_stderr_enabled=false
-```
-
-| Disadvantage | Description |
-|--------------|-------------|
-| **No transaction correlation** | Cannot know txid at output time |
-| **Pipe overhead** | Additional goroutine, performance impact |
-| **Line splitting** | Multiline logs (stack traces, etc.) get split |
-
-### Defaults and Recommended Settings
-
-go-api defaults recommend TraceLogWriter.
-
-```ini
-# whatap.conf defaults
-logsink_enabled=false           # Overall log collection (needs activation)
-logsink_trace_enabled=true      # TraceLogWriter (default enabled)
-logsink_stdout_enabled=false    # ProxyStream stdout (default disabled)
-logsink_stderr_enabled=false    # ProxyStream stderr (default disabled)
-```
-
-> **Note**: Setting just `logsink_enabled=true` auto-enables TraceLogWriter.
-
-### Comparison Summary
-
-| Item | TraceLogWriter (Recommended) | ProxyStream (Legacy) |
-|------|------------------------------|----------------------|
-| Transaction correlation | Yes (txid/mtid/gid included) | No |
-| Performance | No overhead | Pipe overhead |
-| Multiline logs | Collected as single log | Split by line |
-| AST instrumentation required | Auto-injected | Not needed |
-| Usage condition | Use whatap-go-inst | Manual config |
-
-> **Migration**: Existing ProxyStream users automatically switch to TraceLogWriter when building with whatap-go-inst. Set `logsink_stdout_enabled=false`, `logsink_stderr_enabled=false` in whatap.conf to prevent duplicate collection.
-
----
-
-## Configuration File
-
-Manage CLI options via configuration file.
-
-> **Detailed documentation**: [Configuration Guide](./config.md)
-
-### Quick Start
-
-```yaml
-# .whatap/config.yaml
-instrumentation:
-  preset: "full"           # Instrumentation preset (full/minimal/web/database/external/log/custom)
-  error_tracking: false    # Inject error tracking code
-  disabled_packages:       # Packages to disable
-    - "k8s"
-    - "grpc"
-
-copy_exclude:              # Additional directories to exclude when copying (wrap mode)
-  - "tmp"
-  - "testdata"
-```
-
-### Preset Options
-
-| Preset | Description |
-|--------|-------------|
-| `full` | Enable all packages **(default)** |
-| `minimal` | Add only trace.Init/Shutdown |
-| `web` | Web frameworks only (gin, echo, fiber, chi, gorilla, nethttp, fasthttp) |
-| `database` | Databases only (sql, sqlx, gorm, jinzhugorm) |
-| `external` | External services only (redigo, goredis, mongo, sarama, grpc, k8s) |
-| `log` | Logging libraries only (fmt, log, logrus, zap) |
-| `custom` | Specify with enabled_packages |
-
-### Priority
-
-```
-CLI options > Environment variables > Config file > Defaults
-```
+See [Version Filtering](./rules/versions.md) for details.
 
 ---
 
@@ -589,13 +351,6 @@ CLI options > Environment variables > Config file > Defaults
 | `GO_API_AST_DEBUG` | Enable debug output | `GO_API_AST_DEBUG=1` |
 | `GO_API_AST_OUTPUT_DIR` | Instrumented source output directory | `GO_API_AST_OUTPUT_DIR=./instrumented` |
 | `WHATAP_INST_CONFIG` | Config file path | `WHATAP_INST_CONFIG=./config.yaml` |
-
-### Debug Mode Usage
-
-```bash
-# Verbose log output
-GO_API_AST_DEBUG=1 whatap-go-inst go build ./...
-```
 
 ---
 
@@ -645,7 +400,6 @@ http.HandleFunc("/api", whataphttp.Func(handler))
 
 ### Database
 
-**database/sql**
 ```go
 // Before
 db, _ := sql.Open("mysql", dsn)
@@ -660,8 +414,6 @@ db, _ := whatapsql.Open("mysql", dsn)
 
 ### Unsupported Code Patterns
 
-The following patterns are not auto-instrumented. You need to add whatap code manually.
-
 #### 1. Using dot import
 
 ```go
@@ -670,44 +422,19 @@ import . "github.com/gin-gonic/gin"
 
 func main() {
     r := Default()  // Cannot detect without gin. prefix
-    r.Run()
 }
 ```
 
-**Solution**: Use regular import
-```go
-// Works correctly
-import "github.com/gin-gonic/gin"
-
-func main() {
-    r := gin.Default()  // Detected
-    r.Run()
-}
-```
+**Solution**: Use regular import.
 
 #### 2. Router initialization in global variables
 
 ```go
 // Middleware NOT auto-added
 var Router = gin.Default()  // Global-level initialization
-
-func main() {
-    Router.Run()
-}
 ```
 
-**Solution**: Initialize in main() or init() function
-```go
-// Works correctly
-var Router *gin.Engine
-
-func main() {
-    Router = gin.Default()  // Initialized in function - middleware added
-    Router.Run()
-}
-```
-
-### Known Limitations
+**Solution**: Initialize in main() or init() function.
 
 | Pattern | Behavior | Solution |
 |---------|----------|----------|
@@ -718,10 +445,6 @@ func main() {
 ---
 
 ## Migration from Manual to Auto Instrumentation
-
-How to migrate projects with manually inserted whatap/go-api code to auto instrumentation.
-
-### Migration Procedure
 
 ```bash
 # 1. Remove existing whatap code
@@ -737,113 +460,21 @@ cp -r ./cleaned/* ./
 whatap-go-inst go build ./...
 ```
 
-### Notes
-
 | Code Type | remove Behavior |
 |-----------|-----------------|
 | Standard patterns (middleware, sql.Open, etc.) | Auto-removed |
 | Custom code (trace.Start, etc.) | Manual check required |
 
-```go
-// Auto-removed
-r.Use(whatapgin.Middleware())
-db, _ := whatapsql.Open("mysql", dsn)
-
-// Manual check required (custom code)
-ctx = trace.Start(ctx, "custom-span")
-defer trace.End(ctx, nil)
-```
-
-### diff Check Checklist
-
-1. **trace.Init/Shutdown**: Verify removed
-2. **Middleware**: Verify all framework middleware removed
-3. **Custom tracking code**: Decide to keep/remove code directly in business logic
-4. **import statements**: Verify whatap-related imports removed
-
 ---
 
-## Troubleshooting
+## Related Documents
 
-### Instrumentation Not Applied
-
-1. **Clear build cache**
-   ```bash
-   go clean -cache
-   whatap-go-inst go build ./...
-   ```
-
-2. **Check with debug mode**
-   ```bash
-   GO_API_AST_DEBUG=1 whatap-go-inst go build ./...
-   ```
-
-### Compilation Error: whatap package not found
-
-```bash
-# Auto-resolved when using build wrapper
-whatap-go-inst go build ./...
-
-# Manual resolution
-go get github.com/whatap/go-api@latest
-go mod tidy
-```
-
-### inject/remove Result Differs from Original
-
-After inject -> remove, it should be **functionally identical** to original.
-
-**Known limitations (not bugs):**
-- **Blank lines between functions or import groups may disappear**
-- Due to DST (Decorated Syntax Tree) library limitations, blank line decorations are not perfectly preserved
-- Running `go fmt` does not restore blank lines
-- Does not affect code behavior
-
-```bash
-# Compare
-diff -r ./original ./cleaned
-
-# Only blank line differences = normal
-# Code logic differences = please report bug
-# https://github.com/whatap/go-api-inst/issues
-```
-
----
-
-## Multi-Module Projects
-
-Additional setup required when instrumenting projects split into multiple Go modules.
-
-### Summary
-
-| Package Type | Instrumented |
-|--------------|--------------|
-| My project code | Yes |
-| External modules (go get) | No (skipped) |
-| replace local modules | Yes (default mode only) |
-
-### Recommended Approach
-
-For multi-module projects with `replace` directives, use separate inject for each module:
-
-```bash
-# Inject each module separately
-whatap-go-inst inject -s ../shared-lib -o ../shared-lib-inst
-whatap-go-inst inject -s . -o ./instrumented
-
-# Update go.mod to use instrumented version
-cd instrumented
-go mod edit -replace mycompany/shared-lib=../shared-lib-inst
-go get github.com/whatap/go-api@latest
-go mod tidy
-go build ./...
-```
-
-> **Detailed documentation**: [Multi-Module Projects Guide](./multi-module.md)
-
----
-
-## Related Projects
-
-- [whatap/go-api](https://github.com/whatap/go-api) - WhaTap Go monitoring library
-- [whatap/go-api-example](https://github.com/whatap/go-api-example) - Usage examples
+- [Build Wrapper Mode](./build-wrapper.md) — Build wrapper details
+- [Source Inject Mode](./source-inject.md) — Direct source modification
+- [Multi-Module Projects](./multi-module.md) — External module and multi-module instrumentation
+- [Configuration Guide](./config.md) — Config file, presets, packages
+- [Custom Instrumentation](./custom-instrumentation.md) — User-defined rules
+- [Instrumentation Rules](./instrumentation-rules.md) — Transformation patterns per framework
+- [Troubleshooting](./troubleshooting.md) — Common errors and solutions
+- [whatap/go-api](https://github.com/whatap/go-api) — WhaTap Go monitoring library
+- [whatap/go-api-example](https://github.com/whatap/go-api-example) — Usage examples

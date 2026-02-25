@@ -125,15 +125,22 @@ func (r *Remover) RemoveFile(srcPath, dstPath string) error {
 
 // RemoveDir removes monitoring code from all Go files in a directory
 func (r *Remover) RemoveDir(srcDir, dstDir string) error {
+	// Normalize source directory path for comparison
+	srcDirAbs, _ := filepath.Abs(srcDir)
+
 	return filepath.Walk(srcDir, func(path string, info os.FileInfo, err error) error {
 		if err != nil {
 			return err
 		}
 
 		// Directories to skip: vendor, .git, node_modules, whatap-instrumented
+		// But don't skip if it's the source directory itself
 		if info.IsDir() {
 			base := filepath.Base(path)
-			if base == "vendor" || base == ".git" || base == "node_modules" || base == "whatap-instrumented" {
+			pathAbs, _ := filepath.Abs(path)
+			isSourceDir := pathAbs == srcDirAbs
+
+			if !isSourceDir && (base == "vendor" || base == ".git" || base == "node_modules" || base == "whatap-instrumented") {
 				return filepath.SkipDir
 			}
 		}

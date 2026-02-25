@@ -371,8 +371,15 @@ func SetLevel(level LogLevel) {
 
 // TransformerInfo holds transformer information for dependency matching
 type TransformerInfo struct {
-	Name       string
-	ImportPath string
+	Name              string
+	ImportPath        string
+	SupportedVersions []string // §148: supported major versions (nil = no filtering)
+}
+
+// transformerEntry holds transformer info for dependency matching
+type transformerEntry struct {
+	name              string
+	supportedVersions []string
 }
 
 // LoadDependencies parses go.mod and matches against supported transformers
@@ -383,10 +390,13 @@ func (r *Report) LoadDependencies(goModPath string, transformers []TransformerIn
 	}
 	defer file.Close()
 
-	// Build import path to transformer name map
-	supportedPaths := make(map[string]string)
+	// Build import path to transformer entry map
+	supportedPaths := make(map[string]transformerEntry)
 	for _, t := range transformers {
-		supportedPaths[t.ImportPath] = t.Name
+		supportedPaths[t.ImportPath] = transformerEntry{
+			name:              t.Name,
+			supportedVersions: t.SupportedVersions,
+		}
 	}
 
 	scanner := bufio.NewScanner(file)
@@ -423,7 +433,7 @@ func (r *Report) LoadDependencies(goModPath string, transformers []TransformerIn
 }
 
 // parseDependencyLine parses a single dependency line from go.mod
-func parseDependencyLine(line string, supportedPaths map[string]string) *Dependency {
+func parseDependencyLine(line string, supportedPaths map[string]transformerEntry) *Dependency {
 	// Remove "require " prefix if present
 	line = strings.TrimPrefix(line, "require ")
 	line = strings.TrimSpace(line)
@@ -464,25 +474,85 @@ func parseDependencyLine(line string, supportedPaths map[string]string) *Depende
 	}
 }
 
+// isVersionSuffix checks if a string is a Go module version suffix (v2, v3, etc.)
+func isVersionSuffix(s string) bool {
+	if len(s) < 2 || s[0] != 'v' {
+		return false
+	}
+	for _, c := range s[1:] {
+		if c < '0' || c > '9' {
+			return false
+		}
+	}
+	return true
+}
+
+// extractVersionFromPath extracts the version suffix from a dependency path.
+// e.g., "github.com/labstack/echo/v4" → "v4", "github.com/gin-gonic/gin" → ""
+func extractVersionFromPath(depPath string) string {
+	parts := strings.Split(depPath, "/")
+	if len(parts) > 0 {
+		last := parts[len(parts)-1]
+		if isVersionSuffix(last) {
+			return last
+		}
+	}
+	return ""
+}
+
 // matchTransformer checks if a dependency path matches any supported transformer
-func matchTransformer(depPath string, supportedPaths map[string]string) (string, bool) {
+func matchTransformer(depPath string, supportedPaths map[string]transformerEntry) (string, bool) {
 	// Direct match
-	if name, ok := supportedPaths[depPath]; ok {
-		return name, true
+	if entry, ok := supportedPaths[depPath]; ok {
+		// §148: Check version filtering
+		if len(entry.supportedVersions) > 0 {
+			depVersion := extractVersionFromPath(depPath)
+			if !containsString(entry.supportedVersions, depVersion) {
+				return "", false
+			}
+		}
+		return entry.name, true
 	}
 
 	// Check if the dependency is a sub-package of a supported path
-	for supportedPath, name := range supportedPaths {
+	for supportedPath, entry := range supportedPaths {
 		if strings.HasPrefix(depPath, supportedPath+"/") {
-			return name, true
+			// §148: Check version filtering for prefix match
+			if len(entry.supportedVersions) > 0 {
+				// Extract the segment right after the prefix
+				suffix := strings.TrimPrefix(depPath, supportedPath+"/")
+				firstSeg := suffix
+				if idx := strings.Index(suffix, "/"); idx >= 0 {
+					firstSeg = suffix[:idx]
+				}
+				// Determine the version
+				depVersion := ""
+				if isVersionSuffix(firstSeg) {
+					depVersion = firstSeg
+				}
+				if !containsString(entry.supportedVersions, depVersion) {
+					continue
+				}
+			}
+			return entry.name, true
 		}
 		// Also check if supported path is a sub-package (e.g., go-redis/redis/v9)
 		if strings.HasPrefix(supportedPath, depPath+"/") {
-			return name, true
+			return entry.name, true
 		}
 	}
 
 	return "", false
+}
+
+// containsString checks if a string slice contains a specific string
+func containsString(slice []string, s string) bool {
+	for _, item := range slice {
+		if item == s {
+			return true
+		}
+	}
+	return false
 }
 
 // LoadDependenciesFromDir loads dependencies from go.mod in the given directory

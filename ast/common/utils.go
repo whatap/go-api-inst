@@ -33,6 +33,17 @@ func FindMainFunc(file *dst.File) *dst.FuncDecl {
 	return nil
 }
 
+// FindNonEmptyMainFunc finds the main() function with non-empty body.
+// Returns nil if main() doesn't exist or has an empty body.
+// Used to avoid adding trace.Init() import to empty main() functions (§125).
+func FindNonEmptyMainFunc(file *dst.File) *dst.FuncDecl {
+	fn := FindMainFunc(file)
+	if fn == nil || fn.Body == nil || len(fn.Body.List) == 0 {
+		return nil
+	}
+	return fn
+}
+
 // IsMainPackage checks if the file is a main package.
 func IsMainPackage(file *dst.File) bool {
 	return file.Name != nil && file.Name.Name == "main"

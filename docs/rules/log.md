@@ -23,6 +23,24 @@ func main() {
 |----------|---------------------|-------------|
 | (none) | `log.SetOutput(logsink.GetTraceLogWriter(os.Stderr))` | Inserted after trace.Init |
 
+### log.New() Instance Wrapping
+
+When `log.New()` is used to create a custom logger instance, the writer argument is automatically wrapped with `logsink.GetTraceLogWriter()`:
+
+```go
+// Before
+logger := log.New(os.Stderr, "prefix: ", log.LstdFlags)
+
+// After
+logger := log.New(logsink.GetTraceLogWriter(os.Stderr), "prefix: ", log.LstdFlags)
+```
+
+This transformation applies in all contexts: struct fields, return statements, function arguments, and variable assignments.
+
+| Original | After Transformation | Description |
+|----------|---------------------|-------------|
+| `log.New(w, prefix, flag)` | `log.New(logsink.GetTraceLogWriter(w), prefix, flag)` | Writer argument wrapped |
+
 ---
 
 ## logrus
@@ -47,6 +65,22 @@ func main() {
 | (none) | `log.SetOutput(logsink.GetTraceLogWriter(os.Stderr))` | Auto-recognizes alias |
 
 > **Note**: Automatically recognized even when logrus is aliased as `log`.
+
+### logrus.New() Instance Wrapping
+
+When `logrus.New()` is used to create a custom logger instance, it is automatically wrapped with `WrapLogger`:
+
+```go
+// Before
+logger := logrus.New()
+
+// After
+logger := whataplogrus.WrapLogger(logrus.New())
+```
+
+**Signature**: `whataplogrus.WrapLogger(*logrus.Logger) *logrus.Logger`
+
+This transformation applies in all contexts: struct fields, return statements, function arguments, and variable assignments.
 
 ---
 

@@ -88,9 +88,9 @@ func main() {
 		t.Error("Output should contain trace.Shutdown()")
 	}
 
-	// Check middleware
-	if !strings.Contains(outputStr, "whatapgin.Middleware()") {
-		t.Error("Output should contain whatapgin.Middleware()")
+	// Check WrapEngine wrapping
+	if !strings.Contains(outputStr, "whatapgin.WrapEngine(") {
+		t.Error("Output should contain whatapgin.WrapEngine(")
 	}
 }
 
@@ -191,20 +191,19 @@ func TestInjectFile_AlreadyInjected(t *testing.T) {
 	srcFile := filepath.Join(tmpDir, "main.go")
 	dstFile := filepath.Join(tmpDir, "output", "main.go")
 
-	// Already has whatap imports
+	// Already injected with new-style (WrapEngine)
 	content := `package main
 
 import (
 	"github.com/gin-gonic/gin"
-	"github.com/whatap/go-api/trace"
 	"github.com/whatap/go-api/instrumentation/github.com/gin-gonic/gin/whatapgin"
+	"github.com/whatap/go-api/trace"
 )
 
 func main() {
 	trace.Init(nil)
 	defer trace.Shutdown()
-	r := gin.Default()
-	r.Use(whatapgin.Middleware())
+	r := whatapgin.WrapEngine(gin.Default())
 	r.Run(":8080")
 }
 `
@@ -269,9 +268,9 @@ func main() {
 		t.Error("Output should contain whatapchi import")
 	}
 
-	// Chi uses Middleware (function value), not Middleware()
-	if !strings.Contains(outputStr, "whatapchi.Middleware") {
-		t.Error("Output should contain whatapchi.Middleware")
+	// Check WrapRouter wrapping
+	if !strings.Contains(outputStr, "whatapchi.WrapRouter(") {
+		t.Error("Output should contain whatapchi.WrapRouter(")
 	}
 }
 
@@ -717,5 +716,978 @@ func main() {
 	// Check WrapRoundTripper
 	if !strings.Contains(outputStr, "whatapkubernetes.WrapRoundTripper") {
 		t.Error("Output should contain whatapkubernetes.WrapRoundTripper")
+	}
+}
+
+// =============================================================================
+// Basic framework tests (missing packages)
+// =============================================================================
+
+func TestInjectFile_Echo(t *testing.T) {
+	tmpDir := t.TempDir()
+	srcFile := filepath.Join(tmpDir, "main.go")
+	dstFile := filepath.Join(tmpDir, "output", "main.go")
+
+	content := `package main
+
+import (
+	"net/http"
+	"github.com/labstack/echo/v4"
+)
+
+func main() {
+	e := echo.New()
+	e.GET("/", func(c echo.Context) error {
+		return c.String(http.StatusOK, "hello")
+	})
+	e.Start(":8080")
+}
+`
+	if err := os.WriteFile(srcFile, []byte(content), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	injector := NewInjector()
+	if err := injector.InjectFile(srcFile, dstFile); err != nil {
+		t.Fatalf("InjectFile() error = %v", err)
+	}
+
+	output, err := os.ReadFile(dstFile)
+	if err != nil {
+		t.Fatalf("Failed to read output file: %v", err)
+	}
+
+	outputStr := string(output)
+
+	if !strings.Contains(outputStr, "whatapecho") {
+		t.Error("Output should contain whatapecho import")
+	}
+	if !strings.Contains(outputStr, "whatapecho.WrapEcho(") {
+		t.Error("Output should contain whatapecho.WrapEcho(")
+	}
+}
+
+func TestInjectFile_Fiber(t *testing.T) {
+	tmpDir := t.TempDir()
+	srcFile := filepath.Join(tmpDir, "main.go")
+	dstFile := filepath.Join(tmpDir, "output", "main.go")
+
+	content := `package main
+
+import "github.com/gofiber/fiber/v2"
+
+func main() {
+	app := fiber.New()
+	app.Get("/", func(c *fiber.Ctx) error {
+		return c.SendString("hello")
+	})
+	app.Listen(":8080")
+}
+`
+	if err := os.WriteFile(srcFile, []byte(content), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	injector := NewInjector()
+	if err := injector.InjectFile(srcFile, dstFile); err != nil {
+		t.Fatalf("InjectFile() error = %v", err)
+	}
+
+	output, err := os.ReadFile(dstFile)
+	if err != nil {
+		t.Fatalf("Failed to read output file: %v", err)
+	}
+
+	outputStr := string(output)
+
+	if !strings.Contains(outputStr, "whatapfiber") {
+		t.Error("Output should contain whatapfiber import")
+	}
+	if !strings.Contains(outputStr, "whatapfiber.WrapApp(") {
+		t.Error("Output should contain whatapfiber.WrapApp(")
+	}
+}
+
+func TestInjectFile_Gorilla(t *testing.T) {
+	tmpDir := t.TempDir()
+	srcFile := filepath.Join(tmpDir, "main.go")
+	dstFile := filepath.Join(tmpDir, "output", "main.go")
+
+	content := `package main
+
+import (
+	"net/http"
+	"github.com/gorilla/mux"
+)
+
+func main() {
+	r := mux.NewRouter()
+	r.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte("hello"))
+	})
+	http.ListenAndServe(":8080", r)
+}
+`
+	if err := os.WriteFile(srcFile, []byte(content), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	injector := NewInjector()
+	if err := injector.InjectFile(srcFile, dstFile); err != nil {
+		t.Fatalf("InjectFile() error = %v", err)
+	}
+
+	output, err := os.ReadFile(dstFile)
+	if err != nil {
+		t.Fatalf("Failed to read output file: %v", err)
+	}
+
+	outputStr := string(output)
+
+	if !strings.Contains(outputStr, "whatapmux") {
+		t.Error("Output should contain whatapmux import")
+	}
+	if !strings.Contains(outputStr, "whatapmux.WrapRouter(") {
+		t.Error("Output should contain whatapmux.WrapRouter(")
+	}
+}
+
+func TestInjectFile_Logrus_GlobalOnly(t *testing.T) {
+	tmpDir := t.TempDir()
+	srcFile := filepath.Join(tmpDir, "main.go")
+	dstFile := filepath.Join(tmpDir, "output", "main.go")
+
+	// Global logrus only (no logrus.New()) → blank import
+	content := `package main
+
+import "github.com/sirupsen/logrus"
+
+func main() {
+	logrus.Info("hello")
+	logrus.WithField("key", "value").Warn("warning")
+}
+`
+	if err := os.WriteFile(srcFile, []byte(content), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	injector := NewInjector()
+	if err := injector.InjectFile(srcFile, dstFile); err != nil {
+		t.Fatalf("InjectFile() error = %v", err)
+	}
+
+	output, err := os.ReadFile(dstFile)
+	if err != nil {
+		t.Fatalf("Failed to read output file: %v", err)
+	}
+
+	outputStr := string(output)
+
+	// Should have blank import for whataplogrus (init() registers global Hook)
+	if !strings.Contains(outputStr, "whataplogrus") {
+		t.Error("Output should contain whataplogrus import")
+	}
+	// Should NOT have WrapLogger (no logrus.New())
+	if strings.Contains(outputStr, "whataplogrus.WrapLogger") {
+		t.Error("Output should NOT contain WrapLogger for global-only usage")
+	}
+}
+
+func TestInjectFile_Logrus_New(t *testing.T) {
+	tmpDir := t.TempDir()
+	srcFile := filepath.Join(tmpDir, "main.go")
+	dstFile := filepath.Join(tmpDir, "output", "main.go")
+
+	// logrus.New() instance → WrapLogger + regular import
+	content := `package main
+
+import "github.com/sirupsen/logrus"
+
+func main() {
+	log := logrus.New()
+	log.Info("hello")
+}
+`
+	if err := os.WriteFile(srcFile, []byte(content), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	injector := NewInjector()
+	if err := injector.InjectFile(srcFile, dstFile); err != nil {
+		t.Fatalf("InjectFile() error = %v", err)
+	}
+
+	output, err := os.ReadFile(dstFile)
+	if err != nil {
+		t.Fatalf("Failed to read output file: %v", err)
+	}
+
+	outputStr := string(output)
+
+	if !strings.Contains(outputStr, "whataplogrus") {
+		t.Error("Output should contain whataplogrus import")
+	}
+	if !strings.Contains(outputStr, "whataplogrus.WrapLogger(") {
+		t.Error("Output should contain whataplogrus.WrapLogger(")
+	}
+}
+
+func TestInjectFile_Sarama(t *testing.T) {
+	tmpDir := t.TempDir()
+	srcFile := filepath.Join(tmpDir, "main.go")
+	dstFile := filepath.Join(tmpDir, "output", "main.go")
+
+	content := `package main
+
+import "github.com/IBM/sarama"
+
+func main() {
+	config := sarama.NewConfig()
+	config.Producer.Return.Successes = true
+	_ = config
+}
+`
+	if err := os.WriteFile(srcFile, []byte(content), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	injector := NewInjector()
+	if err := injector.InjectFile(srcFile, dstFile); err != nil {
+		t.Fatalf("InjectFile() error = %v", err)
+	}
+
+	output, err := os.ReadFile(dstFile)
+	if err != nil {
+		t.Fatalf("Failed to read output file: %v", err)
+	}
+
+	outputStr := string(output)
+
+	if !strings.Contains(outputStr, "whatapsarama") {
+		t.Error("Output should contain whatapsarama import")
+	}
+	if !strings.Contains(outputStr, "whatapsarama.WrapConfig(") {
+		t.Error("Output should contain whatapsarama.WrapConfig(")
+	}
+}
+
+func TestInjectFile_GoRedis(t *testing.T) {
+	tmpDir := t.TempDir()
+	srcFile := filepath.Join(tmpDir, "main.go")
+	dstFile := filepath.Join(tmpDir, "output", "main.go")
+
+	content := `package main
+
+import "github.com/go-redis/redis/v8"
+
+func main() {
+	rdb := redis.NewClient(&redis.Options{
+		Addr: "localhost:6379",
+	})
+	_ = rdb
+}
+`
+	if err := os.WriteFile(srcFile, []byte(content), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	injector := NewInjector()
+	if err := injector.InjectFile(srcFile, dstFile); err != nil {
+		t.Fatalf("InjectFile() error = %v", err)
+	}
+
+	output, err := os.ReadFile(dstFile)
+	if err != nil {
+		t.Fatalf("Failed to read output file: %v", err)
+	}
+
+	outputStr := string(output)
+
+	if !strings.Contains(outputStr, "whatapgoredis") {
+		t.Error("Output should contain whatapgoredis import")
+	}
+	// goredis replaces package name: redis.NewClient → whatapgoredis.NewClient
+	if !strings.Contains(outputStr, "whatapgoredis.NewClient") {
+		t.Error("Output should contain whatapgoredis.NewClient")
+	}
+}
+
+// =============================================================================
+// §137 Struct Field Initialization Tests
+//
+// These tests verify that framework constructors (New(), Default(), NewRouter())
+// called inside struct field initialization are correctly detected and wrapped.
+// Previously (§137), processBlock only checked AssignStmt. Now all transformers
+// use dst.Inspect on CallExpr with in-place wrapping, handling any context.
+//
+// Pattern tested:
+//   s := &server{ engine: whatapgin.WrapEngine(gin.Default()) }
+// =============================================================================
+
+func TestInjectFile_Gin_StructFieldInit(t *testing.T) {
+	tmpDir := t.TempDir()
+	srcFile := filepath.Join(tmpDir, "main.go")
+	dstFile := filepath.Join(tmpDir, "output", "main.go")
+
+	content := `package main
+
+import "github.com/gin-gonic/gin"
+
+type server struct {
+	engine *gin.Engine
+}
+
+func main() {
+	s := &server{
+		engine: gin.Default(),
+	}
+	s.engine.GET("/", func(c *gin.Context) {
+		c.JSON(200, gin.H{"message": "hello"})
+	})
+	s.engine.Run(":8080")
+}
+`
+	if err := os.WriteFile(srcFile, []byte(content), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	injector := NewInjector()
+	if err := injector.InjectFile(srcFile, dstFile); err != nil {
+		t.Fatalf("InjectFile() error = %v", err)
+	}
+
+	output, err := os.ReadFile(dstFile)
+	if err != nil {
+		t.Fatalf("Failed to read output file: %v", err)
+	}
+
+	outputStr := string(output)
+
+	// trace.Init should always be injected (framework detected via import)
+	if !strings.Contains(outputStr, "trace.Init(nil)") {
+		t.Error("Output should contain trace.Init(nil)")
+	}
+
+	// §137 FIXED: WrapEngine wraps gin.Default() in any context (struct field, return, etc.)
+	if !strings.Contains(outputStr, "whatapgin.WrapEngine(") {
+		t.Error("Output should contain whatapgin.WrapEngine(")
+	}
+}
+
+func TestInjectFile_Echo_StructFieldInit(t *testing.T) {
+	tmpDir := t.TempDir()
+	srcFile := filepath.Join(tmpDir, "main.go")
+	dstFile := filepath.Join(tmpDir, "output", "main.go")
+
+	content := `package main
+
+import (
+	"net/http"
+	"github.com/labstack/echo/v4"
+)
+
+type server struct {
+	echo *echo.Echo
+}
+
+func main() {
+	s := &server{
+		echo: echo.New(),
+	}
+	s.echo.GET("/", func(c echo.Context) error {
+		return c.String(http.StatusOK, "hello")
+	})
+	s.echo.Start(":8080")
+}
+`
+	if err := os.WriteFile(srcFile, []byte(content), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	injector := NewInjector()
+	if err := injector.InjectFile(srcFile, dstFile); err != nil {
+		t.Fatalf("InjectFile() error = %v", err)
+	}
+
+	output, err := os.ReadFile(dstFile)
+	if err != nil {
+		t.Fatalf("Failed to read output file: %v", err)
+	}
+
+	outputStr := string(output)
+
+	if !strings.Contains(outputStr, "trace.Init(nil)") {
+		t.Error("Output should contain trace.Init(nil)")
+	}
+
+	// §137 FIXED: WrapEcho wraps echo.New() in any context
+	if !strings.Contains(outputStr, "whatapecho.WrapEcho(") {
+		t.Error("Output should contain whatapecho.WrapEcho(")
+	}
+}
+
+func TestInjectFile_Fiber_StructFieldInit(t *testing.T) {
+	tmpDir := t.TempDir()
+	srcFile := filepath.Join(tmpDir, "main.go")
+	dstFile := filepath.Join(tmpDir, "output", "main.go")
+
+	content := `package main
+
+import "github.com/gofiber/fiber/v2"
+
+type server struct {
+	app *fiber.App
+}
+
+func main() {
+	s := &server{
+		app: fiber.New(),
+	}
+	s.app.Get("/", func(c *fiber.Ctx) error {
+		return c.SendString("hello")
+	})
+	s.app.Listen(":8080")
+}
+`
+	if err := os.WriteFile(srcFile, []byte(content), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	injector := NewInjector()
+	if err := injector.InjectFile(srcFile, dstFile); err != nil {
+		t.Fatalf("InjectFile() error = %v", err)
+	}
+
+	output, err := os.ReadFile(dstFile)
+	if err != nil {
+		t.Fatalf("Failed to read output file: %v", err)
+	}
+
+	outputStr := string(output)
+
+	if !strings.Contains(outputStr, "trace.Init(nil)") {
+		t.Error("Output should contain trace.Init(nil)")
+	}
+
+	// §137 FIXED: WrapApp wraps fiber.New() in any context
+	if !strings.Contains(outputStr, "whatapfiber.WrapApp(") {
+		t.Error("Output should contain whatapfiber.WrapApp(")
+	}
+}
+
+func TestInjectFile_Chi_StructFieldInit(t *testing.T) {
+	tmpDir := t.TempDir()
+	srcFile := filepath.Join(tmpDir, "main.go")
+	dstFile := filepath.Join(tmpDir, "output", "main.go")
+
+	content := `package main
+
+import (
+	"net/http"
+	"github.com/go-chi/chi/v5"
+)
+
+type server struct {
+	router chi.Router
+}
+
+func main() {
+	s := &server{
+		router: chi.NewRouter(),
+	}
+	s.router.Get("/", func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte("hello"))
+	})
+	http.ListenAndServe(":8080", s.router)
+}
+`
+	if err := os.WriteFile(srcFile, []byte(content), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	injector := NewInjector()
+	if err := injector.InjectFile(srcFile, dstFile); err != nil {
+		t.Fatalf("InjectFile() error = %v", err)
+	}
+
+	output, err := os.ReadFile(dstFile)
+	if err != nil {
+		t.Fatalf("Failed to read output file: %v", err)
+	}
+
+	outputStr := string(output)
+
+	if !strings.Contains(outputStr, "trace.Init(nil)") {
+		t.Error("Output should contain trace.Init(nil)")
+	}
+
+	// §137 FIXED: WrapRouter wraps chi.NewRouter() in any context
+	if !strings.Contains(outputStr, "whatapchi.WrapRouter(") {
+		t.Error("Output should contain whatapchi.WrapRouter(")
+	}
+}
+
+func TestInjectFile_Gorilla_StructFieldInit(t *testing.T) {
+	tmpDir := t.TempDir()
+	srcFile := filepath.Join(tmpDir, "main.go")
+	dstFile := filepath.Join(tmpDir, "output", "main.go")
+
+	content := `package main
+
+import (
+	"net/http"
+	"github.com/gorilla/mux"
+)
+
+type server struct {
+	router *mux.Router
+}
+
+func main() {
+	s := &server{
+		router: mux.NewRouter(),
+	}
+	s.router.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte("hello"))
+	})
+	http.ListenAndServe(":8080", s.router)
+}
+`
+	if err := os.WriteFile(srcFile, []byte(content), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	injector := NewInjector()
+	if err := injector.InjectFile(srcFile, dstFile); err != nil {
+		t.Fatalf("InjectFile() error = %v", err)
+	}
+
+	output, err := os.ReadFile(dstFile)
+	if err != nil {
+		t.Fatalf("Failed to read output file: %v", err)
+	}
+
+	outputStr := string(output)
+
+	if !strings.Contains(outputStr, "trace.Init(nil)") {
+		t.Error("Output should contain trace.Init(nil)")
+	}
+
+	// §137 FIXED: WrapRouter wraps mux.NewRouter() in any context
+	if !strings.Contains(outputStr, "whatapmux.WrapRouter(") {
+		t.Error("Output should contain whatapmux.WrapRouter(")
+	}
+}
+
+func TestInjectFile_Logrus_StructFieldInit(t *testing.T) {
+	tmpDir := t.TempDir()
+	srcFile := filepath.Join(tmpDir, "main.go")
+	dstFile := filepath.Join(tmpDir, "output", "main.go")
+
+	content := `package main
+
+import "github.com/sirupsen/logrus"
+
+type app struct {
+	logger *logrus.Logger
+}
+
+func main() {
+	a := &app{
+		logger: logrus.New(),
+	}
+	a.logger.Info("hello")
+}
+`
+	if err := os.WriteFile(srcFile, []byte(content), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	injector := NewInjector()
+	if err := injector.InjectFile(srcFile, dstFile); err != nil {
+		t.Fatalf("InjectFile() error = %v", err)
+	}
+
+	output, err := os.ReadFile(dstFile)
+	if err != nil {
+		t.Fatalf("Failed to read output file: %v", err)
+	}
+
+	outputStr := string(output)
+
+	if !strings.Contains(outputStr, "trace.Init(nil)") {
+		t.Error("Output should contain trace.Init(nil)")
+	}
+
+	// §137 FIXED: WrapLogger wraps logrus.New() in any context
+	if !strings.Contains(outputStr, "whataplogrus.WrapLogger(") {
+		t.Error("Output should contain whataplogrus.WrapLogger(")
+	}
+}
+
+func TestInjectFile_Sarama_StructFieldInit(t *testing.T) {
+	tmpDir := t.TempDir()
+	srcFile := filepath.Join(tmpDir, "main.go")
+	dstFile := filepath.Join(tmpDir, "output", "main.go")
+
+	content := `package main
+
+import "github.com/IBM/sarama"
+
+type app struct {
+	config *sarama.Config
+}
+
+func main() {
+	a := &app{
+		config: sarama.NewConfig(),
+	}
+	_ = a
+}
+`
+	if err := os.WriteFile(srcFile, []byte(content), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	injector := NewInjector()
+	if err := injector.InjectFile(srcFile, dstFile); err != nil {
+		t.Fatalf("InjectFile() error = %v", err)
+	}
+
+	output, err := os.ReadFile(dstFile)
+	if err != nil {
+		t.Fatalf("Failed to read output file: %v", err)
+	}
+
+	outputStr := string(output)
+
+	if !strings.Contains(outputStr, "trace.Init(nil)") {
+		t.Error("Output should contain trace.Init(nil)")
+	}
+
+	// §137 FIXED: WrapConfig wraps sarama.NewConfig() in any context
+	if !strings.Contains(outputStr, "whatapsarama.WrapConfig(") {
+		t.Error("Output should contain whatapsarama.WrapConfig(")
+	}
+}
+
+// =============================================================================
+// Struct Field Initialization Tests - dst.Inspect packages (should work)
+//
+// These packages use dst.Inspect to traverse ALL AST nodes, so they
+// correctly handle framework calls inside struct field initialization.
+// These tests verify the contrast with processBlock-based packages above.
+// =============================================================================
+
+func TestInjectFile_Grpc_StructFieldInit(t *testing.T) {
+	tmpDir := t.TempDir()
+	srcFile := filepath.Join(tmpDir, "main.go")
+	dstFile := filepath.Join(tmpDir, "output", "main.go")
+
+	content := `package main
+
+import (
+	"log"
+	"net"
+
+	"google.golang.org/grpc"
+)
+
+type app struct {
+	server *grpc.Server
+}
+
+func main() {
+	lis, err := net.Listen("tcp", ":50051")
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	a := &app{
+		server: grpc.NewServer(),
+	}
+	if err := a.server.Serve(lis); err != nil {
+		log.Fatal(err)
+	}
+}
+`
+	if err := os.WriteFile(srcFile, []byte(content), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	injector := NewInjector()
+	if err := injector.InjectFile(srcFile, dstFile); err != nil {
+		t.Fatalf("InjectFile() error = %v", err)
+	}
+
+	output, err := os.ReadFile(dstFile)
+	if err != nil {
+		t.Fatalf("Failed to read output file: %v", err)
+	}
+
+	outputStr := string(output)
+
+	if !strings.Contains(outputStr, "trace.Init(nil)") {
+		t.Error("Output should contain trace.Init(nil)")
+	}
+
+	// grpc uses dst.Inspect → struct field init SHOULD work
+	if !strings.Contains(outputStr, "whatapgrpc") {
+		t.Error("Output should contain whatapgrpc import")
+	}
+	if !strings.Contains(outputStr, "grpc.UnaryInterceptor") {
+		t.Error("Output should contain grpc.UnaryInterceptor in struct field init")
+	}
+	if !strings.Contains(outputStr, "whatapgrpc.UnaryServerInterceptor") {
+		t.Error("Output should contain whatapgrpc.UnaryServerInterceptor in struct field init")
+	}
+}
+
+// =============================================================================
+// §148 Unsupported Major Version Tests
+//
+// These tests verify that unsupported major versions (Echo v5, Fiber v3,
+// GoRedis v10, Chi v6, Aerospike v9) are NOT injected with instrumentation code.
+// =============================================================================
+
+func TestInjectFile_Echo_UnsupportedV5(t *testing.T) {
+	tmpDir := t.TempDir()
+	srcFile := filepath.Join(tmpDir, "main.go")
+	dstFile := filepath.Join(tmpDir, "output", "main.go")
+
+	content := `package main
+
+import "github.com/labstack/echo/v5"
+
+func main() {
+	e := echo.New()
+	e.Start(":8080")
+}
+`
+	if err := os.WriteFile(srcFile, []byte(content), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	injector := NewInjector()
+	if err := injector.InjectFile(srcFile, dstFile); err != nil {
+		t.Fatalf("InjectFile() error = %v", err)
+	}
+
+	output, err := os.ReadFile(dstFile)
+	if err != nil {
+		t.Fatalf("Failed to read output file: %v", err)
+	}
+
+	outputStr := string(output)
+
+	// §148: unsupported version must NOT be injected
+	if strings.Contains(outputStr, "whatapecho") {
+		t.Error("Should NOT inject whatapecho for unsupported echo/v5")
+	}
+}
+
+func TestInjectFile_Fiber_UnsupportedV3(t *testing.T) {
+	tmpDir := t.TempDir()
+	srcFile := filepath.Join(tmpDir, "main.go")
+	dstFile := filepath.Join(tmpDir, "output", "main.go")
+
+	content := `package main
+
+import "github.com/gofiber/fiber/v3"
+
+func main() {
+	app := fiber.New()
+	app.Listen(":8080")
+}
+`
+	if err := os.WriteFile(srcFile, []byte(content), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	injector := NewInjector()
+	if err := injector.InjectFile(srcFile, dstFile); err != nil {
+		t.Fatalf("InjectFile() error = %v", err)
+	}
+
+	output, err := os.ReadFile(dstFile)
+	if err != nil {
+		t.Fatalf("Failed to read output file: %v", err)
+	}
+
+	outputStr := string(output)
+
+	// §148: unsupported version must NOT be injected
+	if strings.Contains(outputStr, "whatapfiber") {
+		t.Error("Should NOT inject whatapfiber for unsupported fiber/v3")
+	}
+}
+
+func TestInjectFile_GoRedis_UnsupportedV10(t *testing.T) {
+	tmpDir := t.TempDir()
+	srcFile := filepath.Join(tmpDir, "main.go")
+	dstFile := filepath.Join(tmpDir, "output", "main.go")
+
+	content := `package main
+
+import "github.com/redis/go-redis/v10"
+
+func main() {
+	rdb := redis.NewClient(&redis.Options{
+		Addr: "localhost:6379",
+	})
+	_ = rdb
+}
+`
+	if err := os.WriteFile(srcFile, []byte(content), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	injector := NewInjector()
+	if err := injector.InjectFile(srcFile, dstFile); err != nil {
+		t.Fatalf("InjectFile() error = %v", err)
+	}
+
+	output, err := os.ReadFile(dstFile)
+	if err != nil {
+		t.Fatalf("Failed to read output file: %v", err)
+	}
+
+	outputStr := string(output)
+
+	// §148: unsupported version must NOT be injected
+	if strings.Contains(outputStr, "whatapgoredis") {
+		t.Error("Should NOT inject whatapgoredis for unsupported go-redis/v10")
+	}
+}
+
+func TestInjectFile_Chi_UnsupportedV6(t *testing.T) {
+	tmpDir := t.TempDir()
+	srcFile := filepath.Join(tmpDir, "main.go")
+	dstFile := filepath.Join(tmpDir, "output", "main.go")
+
+	content := `package main
+
+import (
+	"net/http"
+	"github.com/go-chi/chi/v6"
+)
+
+func main() {
+	r := chi.NewRouter()
+	r.Get("/", func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte("hello"))
+	})
+	http.ListenAndServe(":8080", r)
+}
+`
+	if err := os.WriteFile(srcFile, []byte(content), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	injector := NewInjector()
+	if err := injector.InjectFile(srcFile, dstFile); err != nil {
+		t.Fatalf("InjectFile() error = %v", err)
+	}
+
+	output, err := os.ReadFile(dstFile)
+	if err != nil {
+		t.Fatalf("Failed to read output file: %v", err)
+	}
+
+	outputStr := string(output)
+
+	// §148: unsupported version must NOT be injected
+	if strings.Contains(outputStr, "whatapchi") {
+		t.Error("Should NOT inject whatapchi for unsupported chi/v6")
+	}
+}
+
+func TestInjectFile_Aerospike_UnsupportedV9(t *testing.T) {
+	tmpDir := t.TempDir()
+	srcFile := filepath.Join(tmpDir, "main.go")
+	dstFile := filepath.Join(tmpDir, "output", "main.go")
+
+	content := `package main
+
+import "github.com/aerospike/aerospike-client-go/v9"
+
+func main() {
+	client, err := aerospike.NewClient("localhost", 3000)
+	if err != nil {
+		panic(err)
+	}
+	defer client.Close()
+}
+`
+	if err := os.WriteFile(srcFile, []byte(content), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	injector := NewInjector()
+	if err := injector.InjectFile(srcFile, dstFile); err != nil {
+		t.Fatalf("InjectFile() error = %v", err)
+	}
+
+	output, err := os.ReadFile(dstFile)
+	if err != nil {
+		t.Fatalf("Failed to read output file: %v", err)
+	}
+
+	outputStr := string(output)
+
+	// §148: unsupported version must NOT be injected
+	if strings.Contains(outputStr, "whatapsql") {
+		t.Error("Should NOT inject whatapsql for unsupported aerospike/v9")
+	}
+	if strings.Contains(outputStr, "whatapas") {
+		t.Error("Should NOT inject whatapas for unsupported aerospike/v9")
+	}
+}
+
+func TestInjectFile_GoRedis_StructFieldInit(t *testing.T) {
+	tmpDir := t.TempDir()
+	srcFile := filepath.Join(tmpDir, "main.go")
+	dstFile := filepath.Join(tmpDir, "output", "main.go")
+
+	content := `package main
+
+import "github.com/go-redis/redis/v8"
+
+type app struct {
+	rdb *redis.Client
+}
+
+func main() {
+	a := &app{
+		rdb: redis.NewClient(&redis.Options{
+			Addr: "localhost:6379",
+		}),
+	}
+	_ = a
+}
+`
+	if err := os.WriteFile(srcFile, []byte(content), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	injector := NewInjector()
+	if err := injector.InjectFile(srcFile, dstFile); err != nil {
+		t.Fatalf("InjectFile() error = %v", err)
+	}
+
+	output, err := os.ReadFile(dstFile)
+	if err != nil {
+		t.Fatalf("Failed to read output file: %v", err)
+	}
+
+	outputStr := string(output)
+
+	if !strings.Contains(outputStr, "trace.Init(nil)") {
+		t.Error("Output should contain trace.Init(nil)")
+	}
+
+	// goredis uses dst.Inspect → struct field init SHOULD work
+	if !strings.Contains(outputStr, "whatapgoredis") {
+		t.Error("Output should contain whatapgoredis (package replacement in struct field init)")
 	}
 }

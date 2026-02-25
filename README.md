@@ -11,18 +11,17 @@ Automatically injects/removes `github.com/whatap/go-api` monitoring code, simila
 Download pre-built binaries from [GitHub Releases](https://github.com/whatap/go-api-inst/releases).
 
 ```bash
-# Example: Linux amd64
-VERSION=0.5.0
-curl -LO https://github.com/whatap/go-api-inst/releases/download/v${VERSION}/whatap-go-inst_linux_amd64.tar.gz
-tar xzf whatap-go-inst_linux_amd64.tar.gz
+# Linux amd64
+curl -sSL https://github.com/whatap/go-api-inst/releases/latest/download/whatap-go-inst_linux_amd64.tar.gz | tar xz
 sudo mv whatap-go-inst /usr/local/bin/
-```
 
-Available binaries:
-- `whatap-go-inst_linux_amd64.tar.gz` - Linux x86_64
-- `whatap-go-inst_linux_arm64.tar.gz` - Linux ARM64
-- `goinst_linux_amd64.tar.gz` - Short alias (optional)
-- `goinst_linux_arm64.tar.gz` - Short alias (optional)
+# Linux arm64
+curl -sSL https://github.com/whatap/go-api-inst/releases/latest/download/whatap-go-inst_linux_arm64.tar.gz | tar xz
+sudo mv whatap-go-inst /usr/local/bin/
+
+# Specific version (e.g., v0.5.4)
+curl -sSL https://github.com/whatap/go-api-inst/releases/download/v0.5.4/whatap-go-inst_linux_amd64.tar.gz | tar xz
+```
 
 ### Option 2: Go Install
 
@@ -84,8 +83,8 @@ RUN wget -qO- https://github.com/whatap/go-api-inst/releases/latest/download/wha
 WORKDIR /app
 COPY . .
 
-# Build with instrumentation (no init required)
-RUN whatap-go-inst --no-output go build -o /app/server .
+# Build with instrumentation
+RUN whatap-go-inst go build -o /app/server .
 
 # Stage 2: Run with WhaTap agent
 FROM alpine:latest
@@ -100,6 +99,8 @@ COPY --from=builder /app/server .
 RUN echo "license=your-license-key" > whatap.conf && \
     echo "whatap.server.host=13.124.11.223" >> whatap.conf && \
     echo "app_name=myapp" >> whatap.conf
+
+ENV WHATAP_HOME=/app
 
 EXPOSE 8080
 CMD ["/bin/sh", "-c", "/usr/whatap/agent/whatap-agent start && ./server"]
@@ -149,13 +150,15 @@ e.Use(whatapecho.Middleware())  // Auto-injected
 app := fiber.New()
 app.Use(whatapfiber.Middleware())  // Auto-injected
 
-// Chi
-r := chi.NewRouter()
-r.Use(whatapchi.Middleware)  // Auto-injected (function value)
+// Chi (in-place wrapping)
+r := whatapchi.WrapRouter(chi.NewRouter())
+
+// Gorilla Mux (in-place wrapping)
+r := whatapmux.WrapRouter(mux.NewRouter())
 
 // net/http (handler wrapping)
-mux.HandleFunc("/", whataphttp.Func(handler))  // Auto-wrapped
-mux.Handle("/api", whataphttp.Handler(h))      // Auto-wrapped
+mux.HandleFunc("/", whataphttp.Func(handler))      // Auto-wrapped
+mux.Handle("/api", whataphttp.WrapHandler(h))      // Auto-wrapped
 ```
 
 ## Implementation Status

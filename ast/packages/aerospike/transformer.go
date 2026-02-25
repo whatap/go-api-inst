@@ -59,15 +59,15 @@ func (t *Transformer) WhatapAsImport() string {
 	return "github.com/whatap/go-api/instrumentation/" + t.asImport + "/whatapas"
 }
 
-// Detect checks if the file uses Aerospike (v6 or v8).
+// SupportedVersions returns the supported major versions for Aerospike.
+// "v6" = aerospike-client-go/v6, "v8" = aerospike-client-go/v8.
+func (t *Transformer) SupportedVersions() []string {
+	return []string{"v6", "v8"}
+}
+
+// Detect checks if the file uses Aerospike (v6 or v8 only).
 func (t *Transformer) Detect(file *dst.File) bool {
-	for _, imp := range file.Imports {
-		path := strings.Trim(imp.Path.Value, `"`)
-		if strings.HasPrefix(path, "github.com/aerospike/aerospike-client-go") {
-			return true
-		}
-	}
-	return false
+	return common.HasSupportedImport(file, t.ImportPath(), t.SupportedVersions())
 }
 
 // Inject transforms Aerospike calls (fallback without type info).

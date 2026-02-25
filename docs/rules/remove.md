@@ -23,9 +23,9 @@ r.Use(whatapgin.Middleware())
 e.Use(whatapecho.Middleware())
 app.Use(whatapfiber.Middleware())
 
-// Removed (chi, gorilla)
-r.Use(whatapchi.Middleware)
-r.Use(whatapmux.Middleware)
+// Unwrapped (chi, gorilla) - in-place wrapping restored
+// whatapchi.WrapRouter(chi.NewRouter()) → chi.NewRouter()
+// whatapmux.WrapRouter(mux.NewRouter()) → mux.NewRouter()
 ```
 
 ---

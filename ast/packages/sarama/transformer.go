@@ -46,7 +46,8 @@ func (t *Transformer) Detect(file *dst.File) bool {
 	return false
 }
 
-// Inject adds whatapsarama interceptor after sarama.NewConfig().
+// Inject adds whatapsarama.WrapConfig() wrapping around sarama.NewConfig() calls.
+// Uses dst.Inspect on CallExpr to detect calls in any context (struct fields, etc).
 // Returns (true, nil) if transformation occurred, (false, nil) otherwise.
 func (t *Transformer) Inject(file *dst.File) (bool, error) {
 	t.transformed = false
@@ -61,126 +62,91 @@ func (t *Transformer) Inject(file *dst.File) (bool, error) {
 		return false, nil
 	}
 
+	// Phase 1: Wrap sarama.NewConfig() calls in-place
 	for _, decl := range file.Decls {
 		fn, ok := decl.(*dst.FuncDecl)
 		if !ok || fn.Body == nil {
 			continue
 		}
 
-		// First pass: find all NewConfig() calls in this function
-		var configVars []string
-		var configIndices []int
-		for i, stmt := range fn.Body.List {
-			if configVar := t.getSaramaNewConfigVar(stmt, pkgName); configVar != "" {
-				configVars = append(configVars, configVar)
-				configIndices = append(configIndices, i)
+		dst.Inspect(fn.Body, func(n dst.Node) bool {
+			call, ok := n.(*dst.CallExpr)
+			if !ok {
+				return true
 			}
-		}
 
-		// Skip if no NewConfig() calls
-		if len(configVars) == 0 {
+			// If this is already a wrap call, skip its children
+			callPkg, callFunc := getCallPkgAndFunc(call)
+			if callPkg == "whatapsarama" && callFunc == "WrapConfig" {
+				return false
+			}
+
+			// Check for sarama.NewConfig()
+			if callPkg == pkgName && callFunc == "NewConfig" {
+				wrapCallExpr(call, "whatapsarama", "WrapConfig")
+				t.transformed = true
+				return false
+			}
+
+			return true
+		})
+	}
+
+	// Phase 2: Clean up old-style interceptor statements (backward compatibility upgrade)
+	for _, decl := range file.Decls {
+		fn, ok := decl.(*dst.FuncDecl)
+		if !ok || fn.Body == nil {
 			continue
 		}
 
-		// Second pass: build new statement list
-		// Add interceptor declaration once at the beginning (after first NewConfig)
 		var newList []dst.Stmt
-		interceptorDeclared := false
-
-		for i, stmt := range fn.Body.List {
-			newList = append(newList, stmt)
-
-			// Check if this is a NewConfig() call
-			configVar := t.getSaramaNewConfigVar(stmt, pkgName)
-			if configVar == "" {
+		for _, stmt := range fn.Body.List {
+			// Skip: whatapInterceptor := &whatapsarama.Interceptor{}
+			if t.isWhatapsaramaInterceptorDecl(stmt) {
+				t.transformed = true
 				continue
 			}
 
-			// Add interceptor declaration only once (after first NewConfig)
-			if !interceptorDeclared {
-				interceptorVarStmt := &dst.AssignStmt{
-					Lhs: []dst.Expr{dst.NewIdent("whatapInterceptor")},
-					Tok: token.DEFINE,
-					Rhs: []dst.Expr{
-						&dst.UnaryExpr{
-							Op: token.AND,
-							X: &dst.CompositeLit{
-								Type: &dst.SelectorExpr{
-									X:   dst.NewIdent("whatapsarama"),
-									Sel: dst.NewIdent("Interceptor"),
-								},
-							},
-						},
-					},
-				}
-				interceptorVarStmt.Decs.After = dst.NewLine
-				newList = append(newList, interceptorVarStmt)
-				interceptorDeclared = true
+			// Skip: config.Producer.Interceptors = ... or config.Consumer.Interceptors = ...
+			if t.isSaramaInterceptorAssign(stmt) {
+				t.transformed = true
+				continue
 			}
 
-			// Add: config.Producer.Interceptors = []sarama.ProducerInterceptor{whatapInterceptor}
-			producerStmt := &dst.AssignStmt{
-				Lhs: []dst.Expr{
-					&dst.SelectorExpr{
-						X: &dst.SelectorExpr{
-							X:   dst.NewIdent(configVar),
-							Sel: dst.NewIdent("Producer"),
-						},
-						Sel: dst.NewIdent("Interceptors"),
-					},
-				},
-				Tok: token.ASSIGN,
-				Rhs: []dst.Expr{
-					&dst.CompositeLit{
-						Type: &dst.ArrayType{
-							Elt: &dst.SelectorExpr{
-								X:   dst.NewIdent("sarama"),
-								Sel: dst.NewIdent("ProducerInterceptor"),
-							},
-						},
-						Elts: []dst.Expr{dst.NewIdent("whatapInterceptor")},
-					},
-				},
-			}
-			producerStmt.Decs.After = dst.NewLine
-			newList = append(newList, producerStmt)
-
-			// Add: config.Consumer.Interceptors = []sarama.ConsumerInterceptor{whatapInterceptor}
-			consumerStmt := &dst.AssignStmt{
-				Lhs: []dst.Expr{
-					&dst.SelectorExpr{
-						X: &dst.SelectorExpr{
-							X:   dst.NewIdent(configVar),
-							Sel: dst.NewIdent("Consumer"),
-						},
-						Sel: dst.NewIdent("Interceptors"),
-					},
-				},
-				Tok: token.ASSIGN,
-				Rhs: []dst.Expr{
-					&dst.CompositeLit{
-						Type: &dst.ArrayType{
-							Elt: &dst.SelectorExpr{
-								X:   dst.NewIdent("sarama"),
-								Sel: dst.NewIdent("ConsumerInterceptor"),
-							},
-						},
-						Elts: []dst.Expr{dst.NewIdent("whatapInterceptor")},
-					},
-				},
-			}
-			consumerStmt.Decs.After = dst.NewLine
-			newList = append(newList, consumerStmt)
-			t.transformed = true
-			_ = i // suppress unused variable warning
+			newList = append(newList, stmt)
 		}
 		fn.Body.List = newList
 	}
+
 	return t.transformed, nil
 }
 
-// Remove removes whatapsarama interceptor statements.
+// Remove removes whatapsarama instrumentation.
 func (t *Transformer) Remove(file *dst.File) error {
+	// Phase 1: Unwrap whatapsarama.WrapConfig(expr) → expr
+	for _, decl := range file.Decls {
+		fn, ok := decl.(*dst.FuncDecl)
+		if !ok || fn.Body == nil {
+			continue
+		}
+
+		dst.Inspect(fn.Body, func(n dst.Node) bool {
+			call, ok := n.(*dst.CallExpr)
+			if !ok {
+				return true
+			}
+
+			pkg, funcName := getCallPkgAndFunc(call)
+			if pkg == "whatapsarama" && funcName == "WrapConfig" && len(call.Args) == 1 {
+				unwrapCallExpr(call)
+				return false
+			}
+
+			return true
+		})
+	}
+
+	// Phase 2: Remove old-style interceptor statements (backward compatibility)
 	for _, decl := range file.Decls {
 		fn, ok := decl.(*dst.FuncDecl)
 		if !ok || fn.Body == nil {
@@ -206,33 +172,49 @@ func (t *Transformer) Remove(file *dst.File) error {
 	return nil
 }
 
-// getSaramaNewConfigVar returns the variable name if stmt is sarama.NewConfig()
-// pkgName is the actual package name used in code (could be alias)
-func (t *Transformer) getSaramaNewConfigVar(stmt dst.Stmt, pkgName string) string {
-	assign, ok := stmt.(*dst.AssignStmt)
-	if !ok || len(assign.Lhs) == 0 || len(assign.Rhs) == 0 {
-		return ""
+// getCallPkgAndFunc extracts package name and function name from a call expression.
+func getCallPkgAndFunc(call *dst.CallExpr) (string, string) {
+	if sel, ok := call.Fun.(*dst.SelectorExpr); ok {
+		if ident, ok := sel.X.(*dst.Ident); ok {
+			return ident.Name, sel.Sel.Name
+		}
+	}
+	return "", ""
+}
+
+// wrapCallExpr wraps a CallExpr in-place: pkg.Func(args) → wrapPkg.wrapFunc(pkg.Func(args))
+func wrapCallExpr(call *dst.CallExpr, wrapPkg, wrapFunc string) {
+	originalFun := call.Fun
+	originalArgs := make([]dst.Expr, len(call.Args))
+	copy(originalArgs, call.Args)
+	originalEllipsis := call.Ellipsis
+
+	innerCall := &dst.CallExpr{
+		Fun:      originalFun,
+		Args:     originalArgs,
+		Ellipsis: originalEllipsis,
 	}
 
-	call, ok := assign.Rhs[0].(*dst.CallExpr)
+	call.Fun = &dst.SelectorExpr{
+		X:   dst.NewIdent(wrapPkg),
+		Sel: dst.NewIdent(wrapFunc),
+	}
+	call.Args = []dst.Expr{innerCall}
+	call.Ellipsis = false
+}
+
+// unwrapCallExpr unwraps a CallExpr in-place: wrapPkg.wrapFunc(inner) → inner
+func unwrapCallExpr(call *dst.CallExpr) {
+	if len(call.Args) != 1 {
+		return
+	}
+	innerCall, ok := call.Args[0].(*dst.CallExpr)
 	if !ok {
-		return ""
+		return
 	}
-
-	sel, ok := call.Fun.(*dst.SelectorExpr)
-	if !ok {
-		return ""
-	}
-
-	ident, ok := sel.X.(*dst.Ident)
-	if !ok || ident.Name != pkgName || sel.Sel.Name != "NewConfig" {
-		return ""
-	}
-
-	if lhsIdent, ok := assign.Lhs[0].(*dst.Ident); ok {
-		return lhsIdent.Name
-	}
-	return ""
+	call.Fun = innerCall.Fun
+	call.Args = innerCall.Args
+	call.Ellipsis = innerCall.Ellipsis
 }
 
 // isWhatapsaramaInterceptorDecl checks if stmt is whatapInterceptor := &whatapsarama.Interceptor{}

@@ -50,6 +50,13 @@ type AliasedImportTransformer interface {
 	WhatapImportAlias() string
 }
 
+// VersionedTransformer is an optional interface for transformers that support specific major versions only.
+// Transformers using HasImportPrefix should implement this to prevent injection into unsupported versions.
+// nil or empty means no version filtering (backward compatible).
+type VersionedTransformer interface {
+	SupportedVersions() []string // e.g., {"", "v4"} for echo (""=v1, "v4"=v4)
+}
+
 // Global registry
 var registry = make(map[string]Transformer)
 

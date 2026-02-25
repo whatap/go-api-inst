@@ -31,8 +31,9 @@ github.com/whatap/go-api/instrumentation/
 | Type | Pattern | Example |
 |------|---------|---------|
 | Middleware insertion | `.Use(whatapXXX.Middleware())` | Gin, Echo, Fiber |
-| Function value passing | `.Use(whatapXXX.Middleware)` | Chi, Gorilla |
-| Handler wrapping | `whataphttp.Func(handler)` | net/http |
+| Function value passing | `.Use(whatapXXX.Middleware)` | Chi |
+| In-place wrapping | `whatapmux.WrapRouter(mux.NewRouter())` | Gorilla |
+| Handler wrapping | `whataphttp.Func(handler)`, `whataphttp.WrapHandler(handler)` | net/http |
 | Function replacement | `whatapsql.Open()` | database/sql, sqlx, GORM |
 | Closure wrapping | `whatapsql.Wrap(ctx, ...)` | Aerospike |
 | Interceptor addition | `grpc.UnaryInterceptor(...)` | gRPC |

@@ -38,91 +38,112 @@ func (t *Transformer) Detect(file *dst.File) bool {
 	return common.HasImport(file, t.ImportPath())
 }
 
-// Inject adds Gorilla mux middleware instrumentation.
+// Inject adds Gorilla mux middleware instrumentation via in-place CallExpr wrapping.
+// Transforms: mux.NewRouter() → whatapmux.WrapRouter(mux.NewRouter())
 // Returns (true, nil) if transformation occurred, (false, nil) otherwise.
 func (t *Transformer) Inject(file *dst.File) (bool, error) {
 	t.transformed = false
 
-	// Get the actual package name used in code (could be alias)
 	pkgName := common.GetPackageNameForImportPrefix(file, t.ImportPath())
 	if pkgName == "" {
 		return false, nil
 	}
 
+	// Phase 1: Wrap constructor calls in-place
 	for _, decl := range file.Decls {
 		fn, ok := decl.(*dst.FuncDecl)
 		if !ok || fn.Body == nil {
 			continue
 		}
 
-		var newList []dst.Stmt
-		for _, stmt := range fn.Body.List {
-			newList = append(newList, stmt)
-
-			// Check if this is an assignment statement
-			assign, ok := stmt.(*dst.AssignStmt)
-			if !ok || len(assign.Lhs) == 0 || len(assign.Rhs) == 0 {
-				continue
-			}
-
-			// Check if RHS is a function call
-			call, ok := assign.Rhs[0].(*dst.CallExpr)
+		dst.Inspect(fn.Body, func(n dst.Node) bool {
+			call, ok := n.(*dst.CallExpr)
 			if !ok {
+				return true
+			}
+
+			pkg, funcName := getCallPkgAndFunc(call)
+			if pkg == "whatapmux" && funcName == "WrapRouter" {
+				return false
+			}
+
+			if pkg == pkgName && funcName == "NewRouter" {
+				wrapCallExpr(call, "whatapmux", "WrapRouter")
+				t.transformed = true
+				return false
+			}
+
+			return true
+		})
+	}
+
+	// Phase 2: Clean up old-style middleware statements
+	dst.Inspect(file, func(n dst.Node) bool {
+		block, ok := n.(*dst.BlockStmt)
+		if !ok {
+			return true
+		}
+
+		var newList []dst.Stmt
+		for _, stmt := range block.List {
+			if isWhatapMiddlewareCall(stmt) {
+				t.transformed = true
 				continue
 			}
-
-			// Get the variable name and function name
-			varName := getVarName(assign.Lhs[0])
-			callPkg, callFunc := getCallPkgAndFunc(call)
-
-			// Check if it's pkgName.NewRouter()
-			if callPkg == pkgName && callFunc == "NewRouter" {
-				middlewareStmt := createMiddlewareStmt(varName)
-				newList = append(newList, middlewareStmt)
-				t.transformed = true
-			}
+			newList = append(newList, stmt)
 		}
-		fn.Body.List = newList
-	}
+		block.List = newList
+
+		return true
+	})
+
 	return t.transformed, nil
 }
 
 // Remove removes Gorilla mux middleware instrumentation.
 func (t *Transformer) Remove(file *dst.File) error {
+	// Phase 1: Unwrap whatapmux.WrapRouter(expr) → expr
 	for _, decl := range file.Decls {
 		fn, ok := decl.(*dst.FuncDecl)
 		if !ok || fn.Body == nil {
 			continue
 		}
 
+		dst.Inspect(fn.Body, func(n dst.Node) bool {
+			call, ok := n.(*dst.CallExpr)
+			if !ok {
+				return true
+			}
+
+			pkg, funcName := getCallPkgAndFunc(call)
+			if pkg == "whatapmux" && funcName == "WrapRouter" && len(call.Args) == 1 {
+				unwrapCallExpr(call)
+				return false
+			}
+
+			return true
+		})
+	}
+
+	// Phase 2: Remove old-style middleware statements (backward compatibility)
+	dst.Inspect(file, func(n dst.Node) bool {
+		block, ok := n.(*dst.BlockStmt)
+		if !ok {
+			return true
+		}
+
 		var newList []dst.Stmt
-		for _, stmt := range fn.Body.List {
+		for _, stmt := range block.List {
 			if isWhatapMiddlewareCall(stmt) {
-				continue // Remove whatap middleware call
+				continue
 			}
 			newList = append(newList, stmt)
 		}
-		fn.Body.List = newList
-	}
+		block.List = newList
+
+		return true
+	})
 	return nil
-}
-
-// getVarName extracts variable name from expression.
-func getVarName(expr dst.Expr) string {
-	if ident, ok := expr.(*dst.Ident); ok {
-		return ident.Name
-	}
-	return ""
-}
-
-// getCallFuncName extracts the full function name from a call expression.
-func getCallFuncName(call *dst.CallExpr) string {
-	if sel, ok := call.Fun.(*dst.SelectorExpr); ok {
-		if ident, ok := sel.X.(*dst.Ident); ok {
-			return ident.Name + "." + sel.Sel.Name
-		}
-	}
-	return ""
 }
 
 // getCallPkgAndFunc extracts package name and function name from a call expression.
@@ -135,27 +156,39 @@ func getCallPkgAndFunc(call *dst.CallExpr) (string, string) {
 	return "", ""
 }
 
-// createMiddlewareStmt creates the middleware injection statement.
-// Example: r.Use(whatapmux.Middleware())
-func createMiddlewareStmt(varName string) dst.Stmt {
-	stmt := &dst.ExprStmt{
-		X: &dst.CallExpr{
-			Fun: &dst.SelectorExpr{
-				X:   dst.NewIdent(varName),
-				Sel: dst.NewIdent("Use"),
-			},
-			Args: []dst.Expr{
-				&dst.CallExpr{
-					Fun: &dst.SelectorExpr{
-						X:   dst.NewIdent("whatapmux"),
-						Sel: dst.NewIdent("Middleware"),
-					},
-				},
-			},
-		},
+// wrapCallExpr wraps a CallExpr in-place.
+func wrapCallExpr(call *dst.CallExpr, wrapPkg, wrapFunc string) {
+	originalFun := call.Fun
+	originalArgs := make([]dst.Expr, len(call.Args))
+	copy(originalArgs, call.Args)
+	originalEllipsis := call.Ellipsis
+
+	innerCall := &dst.CallExpr{
+		Fun:      originalFun,
+		Args:     originalArgs,
+		Ellipsis: originalEllipsis,
 	}
-	stmt.Decs.After = dst.NewLine
-	return stmt
+
+	call.Fun = &dst.SelectorExpr{
+		X:   dst.NewIdent(wrapPkg),
+		Sel: dst.NewIdent(wrapFunc),
+	}
+	call.Args = []dst.Expr{innerCall}
+	call.Ellipsis = false
+}
+
+// unwrapCallExpr unwraps a CallExpr in-place.
+func unwrapCallExpr(call *dst.CallExpr) {
+	if len(call.Args) != 1 {
+		return
+	}
+	innerCall, ok := call.Args[0].(*dst.CallExpr)
+	if !ok {
+		return
+	}
+	call.Fun = innerCall.Fun
+	call.Args = innerCall.Args
+	call.Ellipsis = innerCall.Ellipsis
 }
 
 // isWhatapMiddlewareCall checks if the statement is a whatapmux middleware call.
@@ -170,18 +203,15 @@ func isWhatapMiddlewareCall(stmt dst.Stmt) bool {
 		return false
 	}
 
-	// Check if it's a .Use(...) call
 	sel, ok := call.Fun.(*dst.SelectorExpr)
 	if !ok || sel.Sel.Name != "Use" {
 		return false
 	}
 
-	// Check arguments
 	if len(call.Args) != 1 {
 		return false
 	}
 
-	// Check if argument is whatapmux.Middleware()
 	if argCall, ok := call.Args[0].(*dst.CallExpr); ok {
 		if argSel, ok := argCall.Fun.(*dst.SelectorExpr); ok {
 			if ident, ok := argSel.X.(*dst.Ident); ok {

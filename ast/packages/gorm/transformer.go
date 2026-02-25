@@ -47,37 +47,31 @@ func (t *Transformer) Inject(file *dst.File) (bool, error) {
 		return false, nil
 	}
 
-	for _, decl := range file.Decls {
-		fn, ok := decl.(*dst.FuncDecl)
-		if !ok || fn.Body == nil {
-			continue
+	// Use dst.Inspect to traverse all nodes including anonymous functions (FuncLit)
+	dst.Inspect(file, func(n dst.Node) bool {
+		call, ok := n.(*dst.CallExpr)
+		if !ok {
+			return true
 		}
 
-		dst.Inspect(fn.Body, func(n dst.Node) bool {
-			call, ok := n.(*dst.CallExpr)
-			if !ok {
-				return true
-			}
-
-			sel, ok := call.Fun.(*dst.SelectorExpr)
-			if !ok {
-				return true
-			}
-
-			ident, ok := sel.X.(*dst.Ident)
-			if !ok {
-				return true
-			}
-
-			// pkgName.Open -> whatapgorm.Open
-			if ident.Name == pkgName && sel.Sel.Name == "Open" {
-				ident.Name = "whatapgorm"
-				t.transformed = true
-			}
-
+		sel, ok := call.Fun.(*dst.SelectorExpr)
+		if !ok {
 			return true
-		})
-	}
+		}
+
+		ident, ok := sel.X.(*dst.Ident)
+		if !ok {
+			return true
+		}
+
+		// pkgName.Open -> whatapgorm.Open
+		if ident.Name == pkgName && sel.Sel.Name == "Open" {
+			ident.Name = "whatapgorm"
+			t.transformed = true
+		}
+
+		return true
+	})
 
 	// Add import only if transformation occurred
 	if t.transformed {
@@ -91,35 +85,29 @@ func (t *Transformer) Inject(file *dst.File) (bool, error) {
 
 // Remove transforms whatapgorm.Open back to gorm.Open.
 func (t *Transformer) Remove(file *dst.File) error {
-	for _, decl := range file.Decls {
-		fn, ok := decl.(*dst.FuncDecl)
-		if !ok || fn.Body == nil {
-			continue
+	// Use dst.Inspect to traverse all nodes including anonymous functions (FuncLit)
+	dst.Inspect(file, func(n dst.Node) bool {
+		call, ok := n.(*dst.CallExpr)
+		if !ok {
+			return true
 		}
 
-		dst.Inspect(fn.Body, func(n dst.Node) bool {
-			call, ok := n.(*dst.CallExpr)
-			if !ok {
-				return true
-			}
-
-			sel, ok := call.Fun.(*dst.SelectorExpr)
-			if !ok {
-				return true
-			}
-
-			ident, ok := sel.X.(*dst.Ident)
-			if !ok {
-				return true
-			}
-
-			// whatapgorm.Open -> gorm.Open
-			if ident.Name == "whatapgorm" && sel.Sel.Name == "Open" {
-				ident.Name = "gorm"
-			}
-
+		sel, ok := call.Fun.(*dst.SelectorExpr)
+		if !ok {
 			return true
-		})
-	}
+		}
+
+		ident, ok := sel.X.(*dst.Ident)
+		if !ok {
+			return true
+		}
+
+		// whatapgorm.Open -> gorm.Open
+		if ident.Name == "whatapgorm" && sel.Sel.Name == "Open" {
+			ident.Name = "gorm"
+		}
+
+		return true
+	})
 	return nil
 }

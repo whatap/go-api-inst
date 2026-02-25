@@ -19,6 +19,48 @@ r := gin.Default()
 r.Use(whatapgin.Middleware())
 ```
 
+**Anonymous Function Support** (Cobra pattern):
+```go
+// Before - Cobra Command with gin
+var serverCmd = &cobra.Command{
+    Run: func(cmd *cobra.Command, args []string) {
+        r := gin.New()
+        r.Run(":8080")
+    },
+}
+
+// After - Middleware inserted in anonymous function
+var serverCmd = &cobra.Command{
+    Run: func(cmd *cobra.Command, args []string) {
+        r := gin.New()
+        r.Use(whatapgin.Middleware())  // ✅ Inserted
+        r.Run(":8080")
+    },
+}
+```
+
+> **Note**: All frameworks support anonymous function transformation. See [Common Rules](./common.md#transformation-scope).
+
+### Wrap Function (WrapEngine)
+
+For struct field initialization and return statements where middleware insertion is not possible, `WrapEngine` wraps the engine instance in-place:
+
+```go
+// Before
+svc := &Service{
+    Engine: gin.New(),
+}
+
+// After
+svc := &Service{
+    Engine: whatapgin.WrapEngine(gin.New()),
+}
+```
+
+**Signature**: `whatapgin.WrapEngine(*gin.Engine) *gin.Engine`
+
+> **Note**: `WrapEngine` internally calls `engine.Use(Middleware())` and returns the engine.
+
 ---
 
 ## github.com/labstack/echo/v4
@@ -40,7 +82,25 @@ e := echo.New()
 e.Use(whatapecho.Middleware())
 ```
 
-> **Note**: Versionless echo is also supported (`github.com/labstack/echo`)
+> **Note**: Both `github.com/labstack/echo` (v3) and `echo/v4` are supported. v5+ is not supported and will be skipped.
+
+### Wrap Function (WrapEcho)
+
+For struct field initialization and return statements:
+
+```go
+// Before
+svc := &Service{
+    Echo: echo.New(),
+}
+
+// After
+svc := &Service{
+    Echo: whatapecho.WrapEcho(echo.New()),
+}
+```
+
+**Signature**: `whatapecho.WrapEcho(*echo.Echo) *echo.Echo`
 
 ---
 
@@ -63,11 +123,29 @@ app := fiber.New()
 app.Use(whatapfiber.Middleware())
 ```
 
-> **Note**: Versionless fiber is also supported (`github.com/gofiber/fiber`)
+> **Note**: Only fiber/v2 is supported. fiber v1 (`github.com/gofiber/fiber` without version) and v3+ are not supported and will be skipped.
+
+### Wrap Function (WrapApp)
+
+For struct field initialization and return statements:
+
+```go
+// Before
+svc := &Service{
+    App: fiber.New(),
+}
+
+// After
+svc := &Service{
+    App: whatapfiber.WrapApp(fiber.New()),
+}
+```
+
+**Signature**: `whatapfiber.WrapApp(*fiber.App) *fiber.App`
 
 ---
 
-## github.com/go-chi/chi (including v5)
+## github.com/go-chi/chi (v4, v5)
 
 **Detection Pattern**: `chi.NewRouter()`
 
@@ -81,12 +159,14 @@ import "github.com/whatap/go-api/instrumentation/github.com/go-chi/chi/whatapchi
 // Before
 r := chi.NewRouter()
 
-// After
-r := chi.NewRouter()
-r.Use(whatapchi.Middleware)  // Function value passed (no parentheses)
+// After (in-place wrapping)
+r := whatapchi.WrapRouter(chi.NewRouter())
 ```
 
-> **Note**: Chi passes `Middleware` (function value) not `Middleware()`.
+> **Note**: Both `github.com/go-chi/chi` (v4) and `chi/v5` are supported. v6+ is not supported and will be skipped.
+> Uses in-place wrapping (not middleware insertion). `WrapRouter` internally calls `r.Use(Middleware)` and returns the router.
+
+**Signature**: `whatapchi.WrapRouter[T any](r T) T`
 
 ---
 
@@ -104,10 +184,13 @@ import "github.com/whatap/go-api/instrumentation/github.com/gorilla/mux/whatapmu
 // Before
 r := mux.NewRouter()
 
-// After
-r := mux.NewRouter()
-r.Use(whatapmux.Middleware)  // Function value passed (no parentheses)
+// After (in-place wrapping)
+r := whatapmux.WrapRouter(mux.NewRouter())
 ```
+
+> **Note**: Uses in-place wrapping (not middleware insertion). `WrapRouter` internally calls `r.Use(Middleware())` and returns the router.
+
+**Signature**: `whatapmux.WrapRouter(*mux.Router) *mux.Router`
 
 ---
 
@@ -138,11 +221,31 @@ mux.Handle("/", handler)
 http.Handle("/api", apiHandler)
 
 // After
-mux.Handle("/", whataphttp.Handler(handler))
-http.Handle("/api", whataphttp.Handler(apiHandler))
+mux.Handle("/", whataphttp.WrapHandler(handler))
+http.Handle("/api", whataphttp.WrapHandler(apiHandler))
 ```
 
 > **Note**: net/http doesn't have a middleware concept, so handler wrapping is used.
+
+### Wrap Function (WrapHandler) — Struct Literal
+
+For `http.Server{Handler: ...}` struct literal patterns:
+
+```go
+// Before
+s := &http.Server{
+    Addr:    ":8080",
+    Handler: mux,
+}
+
+// After
+s := &http.Server{
+    Addr:    ":8080",
+    Handler: whataphttp.WrapHandler(mux),
+}
+```
+
+**Signature**: `whataphttp.WrapHandler(http.Handler) http.Handler`
 
 ---
 
@@ -286,27 +389,46 @@ fasthttp.ListenAndServe(":8080", handler)
 fasthttp.ListenAndServe(":8080", whatapfasthttp.Middleware(handler))
 ```
 
+### Wrap Function (WrapHandler) — Struct Literal
+
+For `fasthttp.Server{Handler: ...}` struct literal patterns:
+
+```go
+// Before
+s := &fasthttp.Server{
+    Handler: myHandler,
+}
+
+// After
+s := &fasthttp.Server{
+    Handler: whatapfasthttp.WrapHandler(myHandler),
+}
+```
+
+**Signature**: `whatapfasthttp.WrapHandler(fasthttp.RequestHandler) fasthttp.RequestHandler`
+
 ---
 
 ## Transformation Rules Summary
 
 ### Framework Middleware Insertion
 
-| Package | Detection Pattern | Inserted Code | Method |
-|---------|------------------|---------------|--------|
-| `gin-gonic/gin` | `gin.Default()`, `gin.New()` | `r.Use(whatapgin.Middleware())` | Function call |
-| `labstack/echo/v4` | `echo.New()` | `e.Use(whatapecho.Middleware())` | Function call |
-| `gofiber/fiber/v2` | `fiber.New()` | `app.Use(whatapfiber.Middleware())` | Function call |
-| `go-chi/chi` | `chi.NewRouter()` | `r.Use(whatapchi.Middleware)` | Function value |
-| `gorilla/mux` | `mux.NewRouter()` | `r.Use(whatapmux.Middleware)` | Function value |
-| `valyala/fasthttp` | `fasthttp.ListenAndServe()` | `whatapfasthttp.Middleware(handler)` | Wrapping |
+| Package | Detection Pattern | Inserted Code | Method | Wrap Function |
+|---------|------------------|---------------|--------|---------------|
+| `gin-gonic/gin` | `gin.Default()`, `gin.New()` | `r.Use(whatapgin.Middleware())` | Function call | `WrapEngine()` |
+| `labstack/echo/v4` | `echo.New()` | `e.Use(whatapecho.Middleware())` | Function call | `WrapEcho()` |
+| `gofiber/fiber/v2` | `fiber.New()` | `app.Use(whatapfiber.Middleware())` | Function call | `WrapApp()` |
+| `go-chi/chi` | `chi.NewRouter()` | `whatapchi.WrapRouter(chi.NewRouter())` | In-place wrap | `WrapRouter()` |
+| `gorilla/mux` | `mux.NewRouter()` | `whatapmux.WrapRouter(mux.NewRouter())` | In-place wrap | `WrapRouter()` |
+| `net/http` | `http.Server{Handler}` | `whataphttp.WrapHandler(handler)` | Struct literal | `WrapHandler()` |
+| `valyala/fasthttp` | `fasthttp.Server{Handler}` | `whatapfasthttp.WrapHandler(handler)` | Struct literal | `WrapHandler()` |
 
 ### net/http Handler Wrapping (Server)
 
 | Original Function | After Transformation |
 |-------------------|---------------------|
 | `HandleFunc(path, handler)` | `HandleFunc(path, whataphttp.Func(handler))` |
-| `Handle(path, handler)` | `Handle(path, whataphttp.Handler(handler))` |
+| `Handle(path, handler)` | `Handle(path, whataphttp.WrapHandler(handler))` |
 
 ### net/http Client Wrapping
 

@@ -73,6 +73,9 @@ Internal behavior (--fast mode):
 				fmt.Fprintf(os.Stderr, "[whatap-go-inst] Config file: %s\n", path)
 			}
 			fmt.Fprintf(os.Stderr, "[whatap-go-inst] ErrorTracking: %v\n", errorTrackingEnabled)
+			if cfg.HasExternalModules() {
+				fmt.Fprintf(os.Stderr, "[whatap-go-inst] ExternalModules: %v\n", cfg.ExternalModules)
+			}
 		}
 
 		if len(args) == 0 {
@@ -112,6 +115,22 @@ Internal behavior (--fast mode):
 			// Apply CLI --output flag to config
 			if outputDir != "" {
 				cfg.Instrumentation.OutputDir = outputDir
+			}
+
+			// Apply CLI --external-module flag to config (§138)
+			if cmd.Root().PersistentFlags().Changed("external-module") {
+				for _, mod := range externalModules {
+					found := false
+					for _, existing := range cfg.ExternalModules {
+						if existing == mod {
+							found = true
+							break
+						}
+					}
+					if !found {
+						cfg.ExternalModules = append(cfg.ExternalModules, mod)
+					}
+				}
 			}
 
 			if fastMode {
@@ -350,6 +369,20 @@ func runWithInjectWithConfig(subCmd string, args []string, cfg *config.Config, e
 		os.Exit(1)
 	}
 
+	// 2.5. Process external modules — copy, inject, add replace (§138)
+	var extModResults []ExternalModuleResult
+	if cfg.HasExternalModules() {
+		if debug {
+			fmt.Fprintf(os.Stderr, "[whatap-go-inst] Processing external modules...\n")
+		}
+		var extErr error
+		extModResults, extErr = prepareExternalModules(cfg, srcDir, tmpDir, errorTracking, debug)
+		if extErr != nil {
+			fmt.Fprintf(os.Stderr, "Failed to process external modules: %v\n", extErr)
+			os.Exit(1)
+		}
+	}
+
 	// 3. Run inject
 	if debug {
 		fmt.Fprintf(os.Stderr, "[whatap-go-inst] Injecting instrumentation code...\n")
@@ -370,6 +403,13 @@ func runWithInjectWithConfig(subCmd string, args []string, cfg *config.Config, e
 		getCmd.Stderr = os.Stderr
 	}
 	getCmd.Run() // Ignore error (go.mod might not exist)
+
+	// 4.5. Finalize external modules — add go-api to copied modules' go.mod (§138)
+	if len(extModResults) > 0 {
+		if err := finalizeExternalModules(extModResults, tmpDir, debug); err != nil {
+			fmt.Fprintf(os.Stderr, "[whatap-go-inst] Warning: finalize external modules: %v\n", err)
+		}
+	}
 
 	if debug {
 		fmt.Fprintf(os.Stderr, "[whatap-go-inst] Running go mod tidy...\n")

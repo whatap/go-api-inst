@@ -98,7 +98,8 @@ func (inj *Injector) InjectFile(srcPath, dstPath string) error {
 	}
 
 	// Check for main function first (determines whether to add trace.Init)
-	hasMainFunc := common.FindMainFunc(file) != nil
+	// §125: Use FindNonEmptyMainFunc to skip empty main() functions
+	hasMainFunc := common.FindNonEmptyMainFunc(file) != nil
 
 	// Phase 6: Use transformer registry
 	// Get only enabled transformers from detected packages in file

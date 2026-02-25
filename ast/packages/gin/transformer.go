@@ -13,6 +13,8 @@ func init() {
 	common.Register(&Transformer{})
 }
 
+const whatapImportPath = "github.com/whatap/go-api/instrumentation/github.com/gin-gonic/gin/whatapgin"
+
 // Transformer implements ast.Transformer for Gin framework.
 type Transformer struct {
 	transformed bool // tracks if any transformation was made
@@ -38,7 +40,9 @@ func (t *Transformer) Detect(file *dst.File) bool {
 	return common.HasImport(file, t.ImportPath())
 }
 
-// Inject adds Gin middleware instrumentation.
+// Inject adds Gin middleware instrumentation via in-place CallExpr wrapping.
+// Transforms: gin.Default() → whatapgin.WrapEngine(gin.Default())
+// Transforms: gin.New() → whatapgin.WrapEngine(gin.New())
 // Returns (true, nil) if transformation occurred, (false, nil) otherwise.
 func (t *Transformer) Inject(file *dst.File) (bool, error) {
 	t.transformed = false
@@ -49,45 +53,59 @@ func (t *Transformer) Inject(file *dst.File) (bool, error) {
 		return false, nil
 	}
 
+	// Phase 1: Wrap constructor calls in-place using dst.Inspect on CallExpr
 	for _, decl := range file.Decls {
 		fn, ok := decl.(*dst.FuncDecl)
 		if !ok || fn.Body == nil {
 			continue
 		}
 
-		var newList []dst.Stmt
-		for _, stmt := range fn.Body.List {
-			newList = append(newList, stmt)
-
-			// Check if this is an assignment statement
-			assign, ok := stmt.(*dst.AssignStmt)
-			if !ok || len(assign.Lhs) == 0 || len(assign.Rhs) == 0 {
-				continue
-			}
-
-			// Check if RHS is a function call
-			call, ok := assign.Rhs[0].(*dst.CallExpr)
+		dst.Inspect(fn.Body, func(n dst.Node) bool {
+			call, ok := n.(*dst.CallExpr)
 			if !ok {
-				continue
+				return true
 			}
 
-			// Get the variable name and function name
-			varName := getVarName(assign.Lhs[0])
-			callPkg, callFunc := getCallPkgAndFunc(call)
+			// If this is already a wrap call, skip its children
+			pkg, funcName := getCallPkgAndFunc(call)
+			if pkg == "whatapgin" && funcName == "WrapEngine" {
+				return false
+			}
 
-			// Check if it's pkgName.Default() or pkgName.New()
-			if callPkg == pkgName && (callFunc == "Default" || callFunc == "New") {
-				middlewareStmt := createMiddlewareStmt(varName)
-				newList = append(newList, middlewareStmt)
+			// Check for gin.Default() or gin.New()
+			if pkg == pkgName && (funcName == "Default" || funcName == "New") {
+				wrapCallExpr(call, "whatapgin", "WrapEngine")
 				t.transformed = true
+				return false // don't inspect children of wrapped call
 			}
-		}
-		fn.Body.List = newList
+
+			return true
+		})
 	}
+
+	// Phase 2: Clean up old-style middleware statements (backward compatibility upgrade)
+	dst.Inspect(file, func(n dst.Node) bool {
+		block, ok := n.(*dst.BlockStmt)
+		if !ok {
+			return true
+		}
+
+		var newList []dst.Stmt
+		for _, stmt := range block.List {
+			if isWhatapMiddlewareCall(stmt) {
+				t.transformed = true
+				continue // Remove old-style middleware call
+			}
+			newList = append(newList, stmt)
+		}
+		block.List = newList
+
+		return true
+	})
 
 	// Add import only if transformation occurred
 	if t.transformed {
-		common.AddImport(file, `"github.com/whatap/go-api/instrumentation/github.com/gin-gonic/gin/whatapgin"`)
+		common.AddImport(file, whatapImportPath)
 	}
 
 	return t.transformed, nil
@@ -95,40 +113,48 @@ func (t *Transformer) Inject(file *dst.File) (bool, error) {
 
 // Remove removes Gin middleware instrumentation.
 func (t *Transformer) Remove(file *dst.File) error {
+	// Phase 1: Unwrap whatapgin.WrapEngine(expr) → expr
 	for _, decl := range file.Decls {
 		fn, ok := decl.(*dst.FuncDecl)
 		if !ok || fn.Body == nil {
 			continue
 		}
 
+		dst.Inspect(fn.Body, func(n dst.Node) bool {
+			call, ok := n.(*dst.CallExpr)
+			if !ok {
+				return true
+			}
+
+			pkg, funcName := getCallPkgAndFunc(call)
+			if pkg == "whatapgin" && funcName == "WrapEngine" && len(call.Args) == 1 {
+				unwrapCallExpr(call)
+				return false
+			}
+
+			return true
+		})
+	}
+
+	// Phase 2: Remove old-style middleware statements (backward compatibility)
+	dst.Inspect(file, func(n dst.Node) bool {
+		block, ok := n.(*dst.BlockStmt)
+		if !ok {
+			return true
+		}
+
 		var newList []dst.Stmt
-		for _, stmt := range fn.Body.List {
+		for _, stmt := range block.List {
 			if isWhatapMiddlewareCall(stmt) {
 				continue // Remove whatap middleware call
 			}
 			newList = append(newList, stmt)
 		}
-		fn.Body.List = newList
-	}
+		block.List = newList
+
+		return true
+	})
 	return nil
-}
-
-// getVarName extracts variable name from expression.
-func getVarName(expr dst.Expr) string {
-	if ident, ok := expr.(*dst.Ident); ok {
-		return ident.Name
-	}
-	return ""
-}
-
-// getCallFuncName extracts the full function name from a call expression.
-func getCallFuncName(call *dst.CallExpr) string {
-	if sel, ok := call.Fun.(*dst.SelectorExpr); ok {
-		if ident, ok := sel.X.(*dst.Ident); ok {
-			return ident.Name + "." + sel.Sel.Name
-		}
-	}
-	return ""
 }
 
 // getCallPkgAndFunc extracts package name and function name from a call expression.
@@ -141,30 +167,43 @@ func getCallPkgAndFunc(call *dst.CallExpr) (string, string) {
 	return "", ""
 }
 
-// createMiddlewareStmt creates the middleware injection statement.
-// Example: r.Use(whatapgin.Middleware())
-func createMiddlewareStmt(varName string) dst.Stmt {
-	stmt := &dst.ExprStmt{
-		X: &dst.CallExpr{
-			Fun: &dst.SelectorExpr{
-				X:   dst.NewIdent(varName),
-				Sel: dst.NewIdent("Use"),
-			},
-			Args: []dst.Expr{
-				&dst.CallExpr{
-					Fun: &dst.SelectorExpr{
-						X:   dst.NewIdent("whatapgin"),
-						Sel: dst.NewIdent("Middleware"),
-					},
-				},
-			},
-		},
+// wrapCallExpr wraps a CallExpr in-place: pkg.Func(args) → wrapPkg.wrapFunc(pkg.Func(args))
+func wrapCallExpr(call *dst.CallExpr, wrapPkg, wrapFunc string) {
+	originalFun := call.Fun
+	originalArgs := make([]dst.Expr, len(call.Args))
+	copy(originalArgs, call.Args)
+	originalEllipsis := call.Ellipsis
+
+	innerCall := &dst.CallExpr{
+		Fun:      originalFun,
+		Args:     originalArgs,
+		Ellipsis: originalEllipsis,
 	}
-	stmt.Decs.After = dst.NewLine
-	return stmt
+
+	call.Fun = &dst.SelectorExpr{
+		X:   dst.NewIdent(wrapPkg),
+		Sel: dst.NewIdent(wrapFunc),
+	}
+	call.Args = []dst.Expr{innerCall}
+	call.Ellipsis = false
+}
+
+// unwrapCallExpr unwraps a CallExpr in-place: wrapPkg.wrapFunc(inner) → inner
+func unwrapCallExpr(call *dst.CallExpr) {
+	if len(call.Args) != 1 {
+		return
+	}
+	innerCall, ok := call.Args[0].(*dst.CallExpr)
+	if !ok {
+		return
+	}
+	call.Fun = innerCall.Fun
+	call.Args = innerCall.Args
+	call.Ellipsis = innerCall.Ellipsis
 }
 
 // isWhatapMiddlewareCall checks if the statement is a whatapgin middleware call.
+// Detects: varName.Use(whatapgin.Middleware())
 func isWhatapMiddlewareCall(stmt dst.Stmt) bool {
 	exprStmt, ok := stmt.(*dst.ExprStmt)
 	if !ok {

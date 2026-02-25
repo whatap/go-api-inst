@@ -111,6 +111,11 @@ type Config struct {
 	// These are added to DefaultCopyExcludeDirs
 	CopyExclude []string `yaml:"copy_exclude"`
 
+	// ExternalModules is external modules (in GOMODCACHE) to instrument (§138)
+	// These modules are copied from GOMODCACHE, injected, and linked via replace directive
+	// e.g., ["gitrepo.xlaxiata.id/go-module/goutils/v3", "mycompany.com/internal/lib"]
+	ExternalModules []string `yaml:"external_modules"`
+
 	// BaseDir is the base directory for all relative paths (not loaded from yaml)
 	// If config file is .whatap/config.yaml, BaseDir is the parent of .whatap/
 	// e.g., /myapp/.whatap/config.yaml → BaseDir = /myapp/
@@ -350,6 +355,13 @@ func (c *Config) Merge(other *Config) {
 	if len(other.CopyExclude) > 0 {
 		c.CopyExclude = append(c.CopyExclude, other.CopyExclude...)
 	}
+
+	// Merge ExternalModules (add, deduplicate)
+	for _, mod := range other.ExternalModules {
+		if !contains(c.ExternalModules, mod) {
+			c.ExternalModules = append(c.ExternalModules, mod)
+		}
+	}
 }
 
 // GetEnabledPackages returns the list of enabled packages
@@ -398,6 +410,16 @@ func (c *Config) GetEnabledPackages() []string {
 func (c *Config) IsPackageEnabled(name string) bool {
 	enabled := c.GetEnabledPackages()
 	return contains(enabled, name)
+}
+
+// HasExternalModules returns true if external module instrumentation is configured
+func (c *Config) HasExternalModules() bool {
+	return len(c.ExternalModules) > 0
+}
+
+// GetExternalModules returns configured external modules to instrument
+func (c *Config) GetExternalModules() []string {
+	return c.ExternalModules
 }
 
 // contains checks if slice contains the item

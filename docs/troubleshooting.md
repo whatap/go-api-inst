@@ -174,17 +174,76 @@ whatap-go-inst automatically adjusts replace relative paths. If the problem pers
 
 ---
 
-## Frequently Asked Questions (FAQ)
+## 9. gorilla/mux Fork Build Error (replace directive)
 
-### Q: What's the difference between inject and wrapper modes?
-- **inject**: Transforms source files and outputs to a separate directory
-- **wrapper**: Transforms in a temporary directory and builds, no changes to original source (recommended)
+### Symptoms
+```
+router.Use undefined (type *mux.Router has no field or method Use)
+```
 
-### Q: Are test files instrumented too?
-No. `*_test.go` files are automatically skipped.
+### Cause
+Some projects replace `gorilla/mux` with a fork via `go.mod` replace directive:
+```go
+// go.mod
+replace github.com/gorilla/mux => github.com/containous/mux v0.0.0-...
+```
 
-### Q: How is the vendor directory handled?
-The vendor directory is copied but not instrumented.
+These forks (e.g., `containous/mux`, `minio/mux`) are routing-only lightweight forks that don't have the `Use()` middleware method. whatap-go-inst sees the `gorilla/mux` import in source code and injects `whatapmux.WrapRouter(mux.NewRouter())`, but the actual fork doesn't support it.
+
+**Known affected projects:**
+| Project | Fork | Stars |
+|---------|------|------:|
+| Traefik | `containous/mux` | 61k |
+| MinIO | `minio/mux` | 60k |
+
+### Solution
+Disable the gorilla transformer via config file:
+
+```yaml
+# .whatap/config.yaml
+instrumentation:
+  disabled_packages:
+    - "gorilla"
+```
+
+Other instrumentation (logrus, gRPC, Redis, k8s, HTTP client, etc.) will still work normally.
+
+**Note**: This only affects projects that use gorilla/mux forks via replace directives. Standard gorilla/mux projects work without any configuration.
+
+---
+
+## 10. Instrumentation Not Applied — Unsupported Framework Version
+
+### Symptoms
+- Build succeeds with no errors
+- But framework instrumentation does not work (no middleware, no Wrap functions)
+- No transactions collected in WhaTap dashboard
+
+### Cause
+Since v0.5.4, **unsupported framework versions are silently skipped** (no error produced).
+
+| Framework | Supported | Skipped |
+|-----------|-----------|---------|
+| Echo | v3, v4 | v5+ |
+| Fiber | v2 | v1, v3+ |
+| go-redis | v8, v9 | v7-, v10+ |
+| Aerospike | v6, v8 | v5-, v7, v9+ |
+
+### How to Check
+
+```bash
+# Check framework version in go.mod
+grep -E "echo|fiber|go-redis|aerospike" go.mod
+
+# Debug mode to see skip behavior
+GO_API_AST_DEBUG=1 whatap-go-inst go build ./...
+```
+
+### Solution
+- Migrate to a supported version
+- Or wait for support to be added for your version
+
+See [Supported Versions](./rules/versions.md) for the full version matrix.
 
 ---
 
