@@ -3,7 +3,6 @@ package cmd
 import (
 	"encoding/json"
 	"fmt"
-	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -18,13 +17,6 @@ type ModuleDownloadInfo struct {
 	Version string `json:"Version"`
 	Dir     string `json:"Dir"`
 	Error   string `json:"Error,omitempty"`
-}
-
-// ExternalModuleResult holds the result of external module processing
-type ExternalModuleResult struct {
-	ModulePath string // original module path
-	Version    string // resolved version
-	LocalDir   string // local copy directory (absolute path)
 }
 
 // resolveModule resolves a module path to its GOMODCACHE location
@@ -74,162 +66,99 @@ func sanitizeModulePath(modulePath string) string {
 	return r.Replace(modulePath)
 }
 
-// copyDirWritable copies a directory tree, ensuring all destination files are writable
-// Source files may be read-only (GOMODCACHE uses 444 permissions)
-func copyDirWritable(src, dst string) error {
-	return filepath.Walk(src, func(path string, info os.FileInfo, err error) error {
-		if err != nil {
-			return err
-		}
+// §234 step 10: prepareExternalModules / finalizeExternalModules / injectDir
+// were wrap-mode exclusives. After wrap/inject/generate removal they are gone;
+// persistExternalModulesForOutput (below) is the fast-mode replacement.
 
-		relPath, err := filepath.Rel(src, path)
-		if err != nil {
-			return err
-		}
-
-		dstPath := filepath.Join(dst, relPath)
-
-		if info.IsDir() {
-			return os.MkdirAll(dstPath, 0755)
-		}
-
-		// Copy file — os.Create gives 0666 (writable), regardless of source permissions
-		srcFile, err := os.Open(path)
-		if err != nil {
-			return err
-		}
-		defer srcFile.Close()
-
-		if err := os.MkdirAll(filepath.Dir(dstPath), 0755); err != nil {
-			return err
-		}
-
-		dstFile, err := os.Create(dstPath)
-		if err != nil {
-			return err
-		}
-		defer dstFile.Close()
-
-		_, err = io.Copy(dstFile, srcFile)
-		return err
-	})
-}
-
-// prepareExternalModules resolves, copies, injects, and adds replace directives
-// for external modules specified in config.
+// persistExternalModulesForOutput finalises the _modules/ tree that toolexec
+// populated under outputDir when --output is set in fast (toolexec) mode.
+// §234 step 8.
 //
-// srcDir: original project directory (must contain go.mod with require for target modules)
-// dstDir: destination directory (tmpDir for wrap mode, outputDir for inject mode)
+// toolexec.saveInstrumentedFile has already placed instrumented .go files
+// at <outputDir>/_modules/<sanitized>/<sub-pkg>/*.go via externalModuleOutputRel.
+// This function completes the emitted tree so it is buildable standalone:
 //
-// Returns results for post-processing (adding go-api dependency after go get).
-func prepareExternalModules(cfg *config.Config, srcDir, dstDir string, errorTracking bool, debug bool) ([]ExternalModuleResult, error) {
-	if !cfg.HasExternalModules() {
-		return nil, nil
-	}
-
-	modulesDir := filepath.Join(dstDir, "_modules")
-	var results []ExternalModuleResult
-
-	// Expand wildcard patterns (e.g., "github.com/org/*") before processing
-	modules := resolveExternalModuleList(cfg.GetExternalModules(), srcDir, debug)
-
-	for _, modulePath := range modules {
-		if debug {
-			fmt.Fprintf(os.Stderr, "[whatap-go-inst] Resolving external module: %s\n", modulePath)
-		}
-
-		// 1. Resolve module location in GOMODCACHE
-		info, err := resolveModule(modulePath, srcDir)
-		if err != nil {
-			return nil, fmt.Errorf("resolve %s: %w", modulePath, err)
-		}
-
-		if debug {
-			fmt.Fprintf(os.Stderr, "[whatap-go-inst]   %s@%s → %s\n", info.Path, info.Version, info.Dir)
-		}
-
-		// 2. Copy module from GOMODCACHE to dstDir/_modules/{name}/
-		localDirName := sanitizeModulePath(modulePath)
-		localDir := filepath.Join(modulesDir, localDirName)
-
-		if err := copyDirWritable(info.Dir, localDir); err != nil {
-			return nil, fmt.Errorf("copy module %s: %w", modulePath, err)
-		}
-
-		if debug {
-			fmt.Fprintf(os.Stderr, "[whatap-go-inst]   Copied to: %s\n", localDir)
-		}
-
-		// 3. Inject instrumentation code into copied module
-		if err := injectDir(localDir, errorTracking, cfg); err != nil {
-			return nil, fmt.Errorf("inject module %s: %w", modulePath, err)
-		}
-
-		if debug {
-			fmt.Fprintf(os.Stderr, "[whatap-go-inst]   Injected: %s\n", modulePath)
-		}
-
-		// 4. Add replace directive to dstDir/go.mod
-		// go mod edit -replace=module@version=./local/path
-		relModulePath, err := filepath.Rel(dstDir, localDir)
-		if err != nil {
-			relModulePath = localDir
-		}
-		relModulePath = filepath.ToSlash(relModulePath) // Unix-style for go.mod
-
-		replaceArg := fmt.Sprintf("%s@%s=./%s", modulePath, info.Version, relModulePath)
-		editCmd := exec.Command("go", "mod", "edit", "-replace="+replaceArg)
-		editCmd.Dir = dstDir
-		if out, err := editCmd.CombinedOutput(); err != nil {
-			return nil, fmt.Errorf("add replace for %s: %s: %w", modulePath, string(out), err)
-		}
-
-		if debug {
-			fmt.Fprintf(os.Stderr, "[whatap-go-inst]   Added replace: %s@%s => ./%s\n",
-				modulePath, info.Version, relModulePath)
-		}
-
-		results = append(results, ExternalModuleResult{
-			ModulePath: modulePath,
-			Version:    info.Version,
-			LocalDir:   localDir,
-		})
-	}
-
-	return results, nil
-}
-
-// finalizeExternalModules adds go-api dependency to each copied module's go.mod.
-// Must be called AFTER go get github.com/whatap/go-api@latest on dstDir,
-// so that the go-api version can be determined.
-func finalizeExternalModules(results []ExternalModuleResult, dstDir string, debug bool) error {
-	if len(results) == 0 {
+//  1. Copies the GOMODCACHE go.mod into <outputDir>/_modules/<sanitized>/go.mod
+//     so the submodule has its own module metadata.
+//  2. Injects `require github.com/whatap/go-api <version>` into that go.mod
+//     (so the instrumented code can resolve whatap imports).
+//  3. Adds `replace <mod> <ver> => ./_modules/<sanitized>` to the top-level
+//     <outputDir>/go.mod so the main module picks up the local copy.
+//
+// `go mod tidy` is deliberately skipped — users can run it on the emitted
+// tree themselves if they need go.sum to be re-normalised.
+func persistExternalModulesForOutput(cfg *config.Config, projectDir, outputDir string, debug bool) error {
+	if cfg == nil || !cfg.HasExternalModules() {
 		return nil
 	}
 
-	// Get go-api version from main module (already added by go get)
-	goAPIVersion := getGoAPIVersion(dstDir)
+	modules := resolveExternalModuleList(cfg.GetExternalModules(), projectDir, debug)
+	if len(modules) == 0 {
+		return nil
+	}
+
+	// Prefer the outputDir's go.mod for the go-api version, but fall back to
+	// the project's go.mod if the output copy is missing the require line.
+	goAPIVersion := getGoAPIVersion(outputDir)
 	if goAPIVersion == "" {
-		return fmt.Errorf("cannot determine go-api version from %s", dstDir)
+		goAPIVersion = getGoAPIVersion(projectDir)
 	}
 
-	if debug {
-		fmt.Fprintf(os.Stderr, "[whatap-go-inst] go-api version for external modules: %s\n", goAPIVersion)
-	}
+	for _, modulePath := range modules {
+		info, err := resolveModule(modulePath, projectDir)
+		if err != nil {
+			if debug {
+				fmt.Fprintf(os.Stderr, "[whatap-go-inst] §234 external-module %s resolve failed: %v\n", modulePath, err)
+			}
+			continue
+		}
 
-	requireArg := fmt.Sprintf("github.com/whatap/go-api@%s", goAPIVersion)
+		localDirName := sanitizeModulePath(modulePath)
+		localDir := filepath.Join(outputDir, "_modules", localDirName)
 
-	for _, result := range results {
-		editCmd := exec.Command("go", "mod", "edit", "-require="+requireArg)
-		editCmd.Dir = result.LocalDir
+		// 1. Copy go.mod from GOMODCACHE into the output submodule.
+		if err := os.MkdirAll(localDir, 0755); err != nil {
+			return fmt.Errorf("mkdir %s: %w", localDir, err)
+		}
+		srcGoMod := filepath.Join(info.Dir, "go.mod")
+		dstGoMod := filepath.Join(localDir, "go.mod")
+		if data, rdErr := os.ReadFile(srcGoMod); rdErr == nil {
+			if werr := os.WriteFile(dstGoMod, data, 0644); werr != nil {
+				return fmt.Errorf("write %s: %w", dstGoMod, werr)
+			}
+		} else if debug {
+			fmt.Fprintf(os.Stderr, "[whatap-go-inst] §234 skip copy %s (missing go.mod: %v)\n", modulePath, rdErr)
+		}
+
+		// 2. Inject require github.com/whatap/go-api into the submodule go.mod.
+		if goAPIVersion != "" {
+			if _, err := os.Stat(dstGoMod); err == nil {
+				requireArg := fmt.Sprintf("github.com/whatap/go-api@%s", goAPIVersion)
+				editCmd := exec.Command("go", "mod", "edit", "-require="+requireArg)
+				editCmd.Dir = localDir
+				if out, err := editCmd.CombinedOutput(); err != nil && debug {
+					fmt.Fprintf(os.Stderr, "[whatap-go-inst] §234 add go-api require to %s: %s: %v\n", modulePath, out, err)
+				}
+			}
+		}
+
+		// 3. Add replace directive to <outputDir>/go.mod.
+		relModulePath, err := filepath.Rel(outputDir, localDir)
+		if err != nil {
+			relModulePath = localDir
+		}
+		relModulePath = filepath.ToSlash(relModulePath)
+
+		replaceArg := fmt.Sprintf("%s@%s=./%s", modulePath, info.Version, relModulePath)
+		editCmd := exec.Command("go", "mod", "edit", "-replace="+replaceArg)
+		editCmd.Dir = outputDir
 		if out, err := editCmd.CombinedOutput(); err != nil {
-			return fmt.Errorf("add go-api require to %s: %s: %w",
-				result.ModulePath, string(out), err)
+			return fmt.Errorf("add replace %s in %s: %s: %w", modulePath, outputDir, string(out), err)
 		}
 
 		if debug {
-			fmt.Fprintf(os.Stderr, "[whatap-go-inst]   Added go-api %s to: %s\n",
-				goAPIVersion, result.ModulePath)
+			fmt.Fprintf(os.Stderr, "[whatap-go-inst] §234: _modules/%s (replace %s@%s)\n",
+				localDirName, modulePath, info.Version)
 		}
 	}
 
@@ -253,35 +182,6 @@ func findModuleVersionInGoMod(modulePath, projectDir string) string {
 				return parts[1]
 			}
 		}
-	}
-	return ""
-}
-
-// resolveGoAPILatestVersion tries to determine the latest go-api version.
-// First checks if go-api is already in the project's go.mod, then falls back to go list.
-// Returns empty string if resolution fails.
-func resolveGoAPILatestVersion(projectDir string, debug bool) string {
-	// Try go list -m first (works if go-api is already a dependency)
-	ver := getGoAPIVersion(projectDir)
-	if ver != "" {
-		return ver
-	}
-
-	// Try go list -m -versions to find the latest
-	cmd := exec.Command("go", "list", "-m", "-versions", "github.com/whatap/go-api")
-	cmd.Dir = projectDir
-	out, err := cmd.Output()
-	if err == nil {
-		line := strings.TrimSpace(string(out))
-		// Format: "github.com/whatap/go-api v0.1.0 v0.2.0 v0.3.0"
-		parts := strings.Fields(line)
-		if len(parts) >= 2 {
-			return parts[len(parts)-1] // last version is latest
-		}
-	}
-
-	if debug {
-		fmt.Fprintf(os.Stderr, "[whatap-go-inst] Could not resolve go-api version from %s\n", projectDir)
 	}
 	return ""
 }

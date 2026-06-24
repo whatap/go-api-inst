@@ -43,10 +43,10 @@ type TypedTransformer interface {
 
 // AliasedImportTransformer is an extended interface for transformers that need import alias
 // Used when WhatapImport() may conflict with other packages.
-// e.g., github.com/whatap/go-api/sql conflicts with database/sql → needs whatapsql alias
+// e.g., github.com/whatap/go-api/sql conflicts with database/sql and whatapsql → needs whatapdb alias
 type AliasedImportTransformer interface {
 	Transformer
-	// WhatapImportAlias returns the alias for whatap import (e.g., "whatapsql")
+	// WhatapImportAlias returns the alias for whatap import (e.g., "whatapdb")
 	WhatapImportAlias() string
 }
 

@@ -9,8 +9,8 @@ import (
 )
 
 var (
-	// Default values - overridden by ldflags during goreleaser builds
-	Version   = "dev"
+	// Default values - overridden by ldflags during goreleaser builds or debug.ReadBuildInfo
+	Version   = "0.5.4"
 	GitCommit = "unknown"
 	BuildDate = "unknown"
 )

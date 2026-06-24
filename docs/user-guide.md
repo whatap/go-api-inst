@@ -70,10 +70,10 @@ whatap-go-inst go build ./...
 ```
 
 This approach:
-- No setup required - just build
-- Does not modify original source code at all
-- Auto-adds dependencies in temp directory
-- Transformed source saved in whatap-instrumented/ (use `--no-output` to disable)
+- No setup required — just build
+- Does not modify the original source tree
+- Auto-adds dependencies in Go's `$WORK` directory
+- No instrumented source saved to disk by default — add `--output` (or `GO_API_AST_OUTPUT_DIR=…`) to dump a buildable copy
 
 ---
 
@@ -85,22 +85,23 @@ This approach:
 | `--verbose` | `-v` | `false` | Verbose output (includes transformation details) |
 | `--quiet` | `-q` | `false` | Summary only |
 | `--report` | | | JSON report file path |
-| `--output` | | `whatap-instrumented/` | Instrumented source output directory |
-| `--no-output` | | `false` | Do not save instrumented source |
+| `--output` | | *(unset)* | Dump the transformed source. `--output` alone → `whatap-instrumented/`. `--output=DIR` → custom path. Omit the flag entirely to skip saving and avoid any I/O. Can also be set via `GO_API_AST_OUTPUT_DIR`. |
 | `--error-tracking` | | `false` | Inject error tracking code (`trace.Error` in `if err != nil` patterns) |
 | `--external-module` | | | External module to instrument from GOMODCACHE (repeatable, comma-separated, wildcard supported) |
+
+> Legacy flags `--wrap` and `--no-output`, and subcommands `inject` / `generate` / `init` / `uninit`, were **removed in v0.6.0**. The build-wrapper (`whatap-go-inst go build …`) is the single workflow; `--output` replaces the previous inject + copy pattern. `--fast` is accepted but hidden (no-op) to keep old scripts working. The `remove` subcommand is still shipped — see "Other Subcommands" below.
 
 ### JSON Report
 
 ```bash
-whatap-go-inst inject -s ./src -o ./output --report=report.json
+whatap-go-inst --report=report.json go build ./...
 ```
 
 Report structure:
 ```json
 {
-  "timestamp": "2026-01-07T15:00:00+09:00",
-  "command": "inject",
+  "timestamp": "2026-04-24T15:00:00+09:00",
+  "command": "go build",
   "summary": {
     "total": 10,
     "instrumented": 3,
@@ -123,9 +124,9 @@ Report structure:
 
 ## Command Reference
 
-### `whatap-go-inst go` - Build Wrapper (Recommended)
+### `whatap-go-inst go` - Build Wrapper
 
-Wraps go commands to auto-inject monitoring code during build.
+Wraps go commands to auto-inject monitoring code during build. This is the only build mode since v0.6.0.
 
 ```bash
 whatap-go-inst [global-options] go <command> [arguments]
@@ -156,107 +157,30 @@ whatap-go-inst go test ./...
 # Build with error tracking code
 whatap-go-inst --error-tracking go build ./...
 
-# Disable instrumented source output
-whatap-go-inst --no-output go build ./...
+# Dump instrumented source to whatap-instrumented/ (default)
+whatap-go-inst --output go build ./...
 
-# Save instrumented source to custom path
-whatap-go-inst --output ./instrumented go build ./...
+# Dump to a custom path
+whatap-go-inst --output=./instrumented go build ./...
 
 # Instrument external module from GOMODCACHE
 whatap-go-inst --external-module=mycompany.com/internal/lib go build ./...
+
+# Wildcard external module
+whatap-go-inst --external-module="mycompany.com/internal/*" go build ./...
 ```
 
 #### Internal Operation
 
-1. Create temp directory
-2. Copy source files (`.go`, `go.mod`, `go.sum`)
-3. If `--external-module` specified: copy modules from GOMODCACHE, inject, add `replace` directives
-4. AST analysis and monitoring code injection
-5. Run `go get github.com/whatap/go-api@latest` + `go mod tidy`
-6. Execute specified go command
-7. Copy build artifacts to original location
-8. Save instrumented source to `whatap-instrumented/` (unless `--no-output`)
-9. Delete temp directory
+1. Auto-add `github.com/whatap/go-api` to `go.mod` (if missing) and run `go mod tidy`.
+2. **[vendor]** Make sure the whatap packages are present in `vendor/`.
+3. Look up where the whatap and standard-library packages are compiled, so they can be linked later.
+4. Build the project, transforming the source as each package is compiled (in Go's temporary build directory, not your source tree). Internally this uses Go's `-toolexec` mechanism — you never invoke it directly.
+5. Make the newly added packages available to the Go linker.
+6. If `--output` / `GO_API_AST_OUTPUT_DIR` is set, save a buildable copy of the transformed tree to that directory.
+7. **[vendor]** Roll back `go.mod` / `go.sum` / `vendor/` to the original state.
 
-> **Details**: [Build Wrapper Mode](./build-wrapper.md)
-
----
-
-### `whatap-go-inst inject` - Direct Source Modification
-
-Injects monitoring code into source and outputs to separate directory.
-
-```bash
-whatap-go-inst inject [flags]
-```
-
-| Flag | Short | Default | Description |
-|------|-------|---------|-------------|
-| `--src` | `-s` | `.` | Source path (file or directory) |
-| `--output` | `-o` | `./output` | Output directory |
-| `--error-tracking` | | `false` | Inject error tracking code |
-| `--external-module` | | | External module to instrument from GOMODCACHE |
-
-```bash
-# Inject entire directory
-whatap-go-inst inject -s ./myapp -o ./myapp-instrumented
-
-# Build after injection
-cd myapp-instrumented
-go get github.com/whatap/go-api@latest
-go mod tidy
-go build -o ../myapp .
-```
-
-> **Details**: [Source Inject Mode](./source-inject.md)
-
----
-
-### `whatap-go-inst remove` - Remove Monitoring Code
-
-Removes injected monitoring code to restore original state.
-
-```bash
-whatap-go-inst remove [flags]
-```
-
-| Flag | Short | Default | Description |
-|------|-------|---------|-------------|
-| `--src` | `-s` | `.` | Source path (file or directory) |
-| `--output` | `-o` | `./output` | Output directory |
-| `--all` | | `false` | Also remove manually injected patterns |
-
-```bash
-# Remove inject patterns only (default)
-whatap-go-inst remove -s ./instrumented -o ./clean
-
-# Compare with original (should have no differences)
-diff -r ./original ./clean
-
-# Also remove manually injected patterns (--all)
-whatap-go-inst remove --all -s ./src -o ./clean
-```
-
-#### --all Option Details
-
-The `--all` option removes go-api code that users manually injected, in addition to patterns created by the `inject` command.
-
-**Removed patterns:**
-
-| Pattern | Example |
-|---------|---------|
-| Standalone statement | `trace.Step(...)`, `trace.Println(...)` |
-| defer statement | `defer trace.End(ctx, nil)` |
-| AddHook call | `rdb.AddHook(whatapgoredis.NewHook())` |
-| logsink call | `logsink.GetTraceLogWriter(...)` |
-
-**Not removed (warning printed):**
-
-| Pattern | Example | Reason |
-|---------|---------|--------|
-| Variable assignment/declaration | `ctx := trace.Start(...)` | Would break ctx usage |
-| Closure pattern | `whatapsql.Wrap(ctx, ..., func(){...})` | Contains business logic |
-| struct field | `Transport: whataphttp.NewRoundTripper(...)` | Need to restore field value |
+> **Details**: [Build Wrapper Mode](./build-wrapper.md) · [Inspect Transformed Source](./source-inject.md)
 
 ---
 
@@ -446,31 +370,53 @@ var Router = gin.Default()  // Global-level initialization
 
 ## Migration from Manual to Auto Instrumentation
 
+The build wrapper does not modify your originals, so the recommended path is to first strip the manually written `go-api` calls from your tree, then let the wrapper re-inject equivalent calls during the build. `whatap-go-inst remove` automates the strip step.
+
+> **What `remove` does — and does not — clean up:** the wrapper rewrites code in a per-build scratch directory (`$WORK`), so auto-instrumented call sites never reach your source tree. Therefore `whatap-go-inst remove` only targets **manually written** `go-api` imports and calls — it is a cleanup tool for hand-rolled instrumentation, not an inverse of the build wrapper. Stopping the wrapper is enough to revert auto-injected changes; you do not need to run `remove` first.
+
+`whatap-go-inst remove` automates the strip step:
+
 ```bash
-# 1. Remove existing whatap code
-whatap-go-inst remove -s . -o ./cleaned
+# 1. Remove manually written go-api lines from your source. Two options:
+#    a) Use the bundled command — handles imports, trace.Init/Shutdown,
+#       framework middleware, common wrapper unwraps, and standalone
+#       trace.Step / AddHook calls in one pass:
+whatap-go-inst remove --src . --output ./cleaned
 
-# 2. Check diff (ensure no custom code missing)
-diff -r . ./cleaned
+#    b) Or strip them yourself with git grep / codemod / editor search-replace.
+#       Typical patterns:
+#         trace.Start(…), trace.End(…), defer trace.End(…)
+#         <router>.Use(whatap*.Middleware())
+#         whatap*.WrapHandler(…), whatap*.Wrap(…)
+#         import "github.com/whatap/go-api/…"
 
-# 3. Replace if no issues
-cp -r ./cleaned/* ./
+# 2. Verify the cleaned tree compiles without whatap-go-inst
+go build ./...
 
-# 4. Build with auto injection
+# 3. Let the build wrapper re-inject instrumentation
 whatap-go-inst go build ./...
 ```
 
-| Code Type | remove Behavior |
+> The legacy `--all` flag is now a deprecated no-op (manual pattern removal is the default).
+
+## Other Subcommands
+
+| Command | Purpose |
+|---------|---------|
+| `whatap-go-inst remove --src SRC [--output OUT]` | Strip **manually written** `whatap/go-api` monitoring code from a source tree. Useful for migrating from hand-rolled instrumentation to the build wrapper, or when retiring instrumentation. (`--all` flag deprecated — manual pattern removal is the default.) |
+| `whatap-go-inst version` | Print version, git commit, and build date. |
+
+| Code Type | Migration notes |
 |-----------|-----------------|
-| Standard patterns (middleware, sql.Open, etc.) | Auto-removed |
-| Custom code (trace.Start, etc.) | Manual check required |
+| Standard patterns (middleware, sql.Open, etc.) | Safe to strip — build wrapper re-injects equivalent calls |
+| Custom code (`trace.Start`, custom hooks) | Keep manually if your logic needs ctx threading beyond what auto-inject provides |
 
 ---
 
 ## Related Documents
 
 - [Build Wrapper Mode](./build-wrapper.md) — Build wrapper details
-- [Source Inject Mode](./source-inject.md) — Direct source modification
+- [Inspect Transformed Source (`--output`)](./source-inject.md) — Dump instrumented source for review
 - [Multi-Module Projects](./multi-module.md) — External module and multi-module instrumentation
 - [Configuration Guide](./config.md) — Config file, presets, packages
 - [Custom Instrumentation](./custom-instrumentation.md) — User-defined rules

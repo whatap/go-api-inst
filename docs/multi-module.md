@@ -50,25 +50,22 @@ whatap-go-inst --external-module="mycompany.com/internal/*" go build ./...
 
 ---
 
-### Approach 2: Separate inject per Module
+### Approach 2: Dump each module's transformed source (`--output`)
 
-For modules not in GOMODCACHE (local directory modules with `replace` directives).
+If you need a self-contained, pre-instrumented source tree per module (e.g. for air-gapped builds or CI artifacts), run `whatap-go-inst --output=…` inside each module directory. Fast mode will compile the module while dumping the transformed source to the given path.
 
 ```bash
-# 1. Inject each module
-whatap-go-inst inject -s ../db-lib -o ../db-lib-instrumented
-whatap-go-inst inject -s ../web-lib -o ../web-lib-instrumented
-whatap-go-inst inject -s . -o ./instrumented
+# 1. Transform each module (fast mode + --output)
+cd ../db-lib && whatap-go-inst --output=./instrumented go build ./...
+cd ../web-lib && whatap-go-inst --output=./instrumented go build ./...
+cd ./myapp && whatap-go-inst --output=./instrumented go build ./...
 
-# 2. Set up replace directives (instrumented/go.mod)
-#    replace mycompany/db-lib => ../db-lib-instrumented
-#    replace mycompany/web-lib => ../web-lib-instrumented
-
-# 3. Build
-cd instrumented
-go get github.com/whatap/go-api@latest
+# 2. The output directories are buildable on their own
+cd ./myapp/instrumented
 go build ./...
 ```
+
+> Legacy `whatap-go-inst inject -s ... -o ...` CLI was removed in v0.6.0. The fast-mode `--output` flag above replaces it — see [Inspect the Transformed Source](./source-inject.md).
 
 ---
 
@@ -92,15 +89,127 @@ whatap-go-inst go build ./cmd/main
 
 ---
 
-## Mode Comparison
+## Approach Comparison
 
-| | wrap (default) | wrap + --external-module | inject |
+| | fast (default) | fast + `--external-module` | fast + `--output` per module |
 |---|---|---|---|
 | Main module | Instrumented | Instrumented | Instrumented |
-| replace modules | Skipped | Skipped | Separate inject needed |
-| External modules (GOMODCACHE) | Skipped | **Instrumented** | Separate inject needed |
-| Builds binary | Yes | Yes | No (source only) |
-| replace directives | — | Automatic | Manual |
+| replace modules | Skipped | Skipped | Transform each separately |
+| External modules (GOMODCACHE) | Skipped | **Instrumented** | Transform each separately |
+| Builds binary | Yes | Yes | Yes (one binary per module command) |
+| replace directives | — | Automatic | Manual (one per output tree) |
+
+---
+
+## Dependency Resolution Mode Support
+
+Go manages external libraries in multiple ways. whatap-go-inst behavior varies depending on the mode.
+
+### Support Matrix
+
+| Mode | Description | Status |
+|------|-------------|--------|
+| **GOMODCACHE** (default) | Installed via `go get`, cached in `$GOPATH/pkg/mod` | Supported |
+| **vendor** (`go mod vendor`) | Dependencies copied to `vendor/` directory | Supported (auto-detected, `go mod vendor` synced) |
+| **go.work** (workspace) | Multiple modules in a single workspace | Planned |
+| **Local replace** (`=> ../path`) | go.mod redirects to local path | Supported (path auto-adjusted) |
+| **GOPROXY=off** (air-gapped) | No network access | Not supported (network required) |
+| **GOPATH mode** (legacy) | `GO111MODULE=off`, no go.mod | Not supported |
+| **Bazel/Nix** (external build) | Go build system not used | Not supported (incompatible) |
+
+### vendor Projects
+
+Projects using `vendor/` directory are automatically detected and supported.
+
+```bash
+# vendor projects work out of the box
+whatap-go-inst go build ./...
+whatap-go-inst --external-module github.com/gin-gonic/gin go build ./...
+```
+
+#### Vendor Detection
+
+Uses the same auto-vendor logic as Go commands:
+- Checks `vendor/modules.txt` existence
+- Validates `go.mod` has `go >= 1.14` directive
+- Respects GOFLAGS/CLI `-mod=` overrides
+
+#### How vendor projects are handled (fast mode, default)
+
+Fast mode adds whatap imports **at compile time**, so whatap packages must be in `vendor/` before the build starts.
+
+**Approach** (prepare `vendor/` before the build):
+
+```
+1. go get github.com/whatap/go-api       — add to go.mod
+2. Create tool file (//go:build tools)   — prevents tidy from pruning go-api
+3. go mod tidy                           — unify transitive dependency versions
+4. go mod vendor                         — include whatap packages in vendor/
+5. Delete tool file
+6. Locate packages (vendor mode)         — find the compiled whatap packages in vendor/
+7. Build (vendor mode)                   — adds imports and instrumentation at compile time
+8. Rollback (go.mod, go.sum, vendor/)    — restore project to original state
+```
+
+**Why `//go:build tools` tag?**
+- Excluded from `go build` (no build errors)
+- Recognized by `go mod tidy` (prevents go-api from being pruned)
+- Makes `go mod vendor` copy whatap packages into vendor/
+
+**Why vendor mode throughout:**
+- Both the package lookup and the build run in vendor mode, using the same `vendor/` packages
+- Using the same mode for both keeps the package builds consistent, so the linker does not reject them
+
+**New standard-library imports:**
+- Instrumentation may add new standard-library imports (`os`, `context`, etc.) that were not in the original source
+- The tool also locates common standard-library packages (`os`, `context`, `fmt`, `log`, `net/http`)
+- All newly added packages (not just whatap) are made available to the linker
+
+#### --external-module with vendor
+
+With `--external-module`, packages inside vendor/ can also be instrumented:
+
+```bash
+# Instruments mux.NewRouter() inside vendor/github.com/grafana/dskit/
+whatap-go-inst --external-module github.com/grafana/dskit go build ./...
+```
+
+**Real-world examples:**
+- **Grafana Loki** (28k stars): gorilla/mux created inside dskit library → `--external-module github.com/grafana/dskit` enables HTTP+gRPC transaction collection
+- **OpenFaaS** (26k stars): vendor project, both wrap and fast mode WA-TX collection successful
+
+### go.work Workspaces
+
+Multi-module workspaces using `go.work` are not yet supported.
+
+```
+workspace/
+├── go.work          # use ./service-a; use ./service-b
+├── service-a/
+│   └── go.mod
+└── service-b/
+    └── go.mod
+```
+
+**Notes:**
+- `go.work` `replace` directives **override** individual `go.mod` `replace` directives
+- `replace` directives added by `--external-module` may be ignored
+- `go.work` is typically `.gitignore`'d — local and CI behavior may differ
+
+**Current workaround:**
+```bash
+# Ignore go.work and build
+GOWORK=off whatap-go-inst go build ./...
+```
+
+### Air-gapped / Offline Environments
+
+When `GOPROXY=off` or network is blocked, `go get github.com/whatap/go-api` will fail.
+
+**Workarounds:**
+1. Run `go mod download` in a network-accessible environment first
+2. Copy GOMODCACHE to the air-gapped environment
+3. In Docker, run whatap-go-inst in a build stage with network access
 
 ---
 
@@ -114,11 +223,11 @@ Build wrapper adjusts replace paths but does **not** instrument the target modul
 # go.mod
 replace mycompany/db-lib => ../db-lib
 
-# wrap mode: path adjusted, but db-lib code is NOT instrumented
+# build wrapper: path adjusted, but db-lib code is NOT instrumented
 whatap-go-inst go build ./...
 ```
 
-**Solution:** Use `--external-module` (if in GOMODCACHE) or separate inject.
+**Solution:** Use `--external-module` to instrument the replaced module.
 
 ### Libraries without main
 
@@ -184,6 +293,6 @@ CMD ["/bin/sh", "-c", "/usr/whatap/agent/whatap-agent start && ./server"]
 ## Related Documents
 
 - [Build Wrapper Mode](./build-wrapper.md)
-- [Source Inject Mode](./source-inject.md)
+- [Inspect Transformed Source (`--output`)](./source-inject.md)
 - [Version Filtering](./rules/versions.md)
 - [Config Settings](./config.md)

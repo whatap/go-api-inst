@@ -1,8 +1,8 @@
 # whatap-go-inst
 
-Go AST-based automatic instrumentation tool for source code.
+Go AST-based automatic instrumentation tool — adds WhaTap monitoring to your Go application at build time, with no manual code changes.
 
-Automatically injects/removes `github.com/whatap/go-api` monitoring code, similar to Datadog Orchestrion.
+It injects (and can remove) `github.com/whatap/go-api` monitoring code during compilation, so your source tree stays unchanged.
 
 ## Installation
 
@@ -19,8 +19,8 @@ sudo mv whatap-go-inst /usr/local/bin/
 curl -sSL https://github.com/whatap/go-api-inst/releases/latest/download/whatap-go-inst_linux_arm64.tar.gz | tar xz
 sudo mv whatap-go-inst /usr/local/bin/
 
-# Specific version (e.g., v0.5.4)
-curl -sSL https://github.com/whatap/go-api-inst/releases/download/v0.5.4/whatap-go-inst_linux_amd64.tar.gz | tar xz
+# Specific version (e.g., v0.6.0)
+curl -sSL https://github.com/whatap/go-api-inst/releases/download/v0.6.0/whatap-go-inst_linux_amd64.tar.gz | tar xz
 ```
 
 ### Option 2: Go Install
@@ -57,17 +57,19 @@ whatap-go-inst go test ./...
 
 Original source code remains unchanged; instrumentation is only applied to the build output.
 
-### Method 2: Direct Source Modification
+### Method 2: Inspect the instrumented source (`--output`)
 
-Modify source code directly and output to a separate directory.
+Keep Method 1's build wrapper workflow, but also dump the transformed `.go` files to a directory for inspection.
 
 ```bash
-# Inject monitoring code
-whatap-go-inst inject --src ./myapp --output ./instrumented
+# Build and dump instrumented source to ./instrumented/
+whatap-go-inst --output=./instrumented go build -o myapp ./...
 
-# Remove monitoring code
-whatap-go-inst remove --src ./instrumented --output ./clean
+# Or via environment variable
+GO_API_AST_OUTPUT_DIR=./instrumented whatap-go-inst go build -o myapp ./...
 ```
+
+The original source remains unchanged. `./instrumented/` will contain a buildable copy of the transformed sources (including `go.mod` / `go.sum`). The legacy `inject` / `generate` CLI subcommands were removed in v0.6.0; this fast-mode `--output` is the supported replacement. (`whatap-go-inst remove` is still available for stripping manually written monitoring code, e.g. when migrating an existing project — see the `Commands` table.)
 
 ### Docker Example
 
@@ -112,10 +114,11 @@ CMD ["/bin/sh", "-c", "/usr/whatap/agent/whatap-agent start && ./server"]
 
 | Command | Description |
 |---------|-------------|
-| `whatap-go-inst go <cmd>` | Wrap go commands (build, run, test, install) |
-| `whatap-go-inst inject` | Inject monitoring code into source |
-| `whatap-go-inst remove` | Remove monitoring code from source |
+| `whatap-go-inst go <cmd>` | Build wrapper — wraps go commands (build, run, test, install) |
+| `whatap-go-inst remove --src SRC [--output OUT]` | Strip **manually written** `whatap/go-api` monitoring code from a source tree (manual cleanup / migration). The legacy `--all` flag is a deprecated no-op since v0.6.0. |
 | `whatap-go-inst version` | Print version information |
+
+> The `inject` / `generate` / `init` / `uninit` subcommands were removed in v0.6.0. The build wrapper handles dependency add + instrumentation + build in a single step (`whatap-go-inst go build ./...`); use `--output` to dump the transformed source for inspection.
 
 ## Injected Monitoring Patterns
 
@@ -168,15 +171,16 @@ mux.Handle("/api", whataphttp.WrapHandler(h))      // Auto-wrapped
 | trace.Init/Shutdown injection | Done | At main() function start |
 | Auto import addition | Done | Version-specific paths (v2, v4) |
 | Web framework middleware injection | Done | Gin, Echo, Fiber, Chi, Gorilla, FastHTTP |
-| net/http handler wrapping | Done | whataphttp.Func(), whataphttp.Handler() |
+| net/http handler wrapping | Done | whataphttp.Func(), whataphttp.WrapHandler() |
 | HTTP client wrapping | Done | http.Get, http.DefaultClient, etc. |
 | DB instrumentation | Done | sql, sqlx, GORM |
 | Redis instrumentation | Done | go-redis v8/v9, Redigo |
 | MongoDB instrumentation | Done | CommandMonitor-based |
 | gRPC/Kafka instrumentation | Done | Interceptor-based |
-| Code removal | Done | Original restored after inject→remove |
+| Code removal | Done | `whatap-go-inst remove` strips manually inserted `go-api` calls; build-wrapper flow leaves originals untouched |
 | Log library instrumentation | Done | log, logrus, zap |
-| Transformer pattern | Done | 22 package-specific transformers (ast/packages/) |
+| LLM SDK instrumentation | Done | sashabaranov, Eino (eino-ext), Anthropic, openai-go — auto-inject adapters, nested module, `llm_enabled=true` |
+| Instrumentation rules | Done | Unified engine — 115 built-in rules across 10 instrumentation types |
 | Custom instrumentation | Done | inject, replace, hook, add, transform rules |
 
 ## Supported Frameworks
@@ -203,7 +207,7 @@ mux.Handle("/api", whataphttp.WrapHandler(h))      // Auto-wrapped
 
 ### NoSQL
 - `go.mongodb.org/mongo-driver/mongo`
-- `github.com/aerospike/aerospike-client-go` (v6, v8)
+- `github.com/aerospike/aerospike-client-go` (v6)
 
 ### Message Queue / RPC / Cloud
 - `google.golang.org/grpc`
@@ -217,6 +221,14 @@ mux.Handle("/api", whataphttp.WrapHandler(h))      // Auto-wrapped
 - `github.com/sirupsen/logrus`
 - `go.uber.org/zap`
 
+### LLM SDKs (requires `llm_enabled=true`)
+- `github.com/sashabaranov/go-openai`
+- `github.com/cloudwego/eino-ext/components/model/openai`, `.../claude`
+- `github.com/anthropics/anthropic-sdk-go`
+- `github.com/openai/openai-go`
+
+> LLM adapters live in the nested module `github.com/whatap/go-api/instrumentation/llm`, which the build wrapper adds automatically. See [LLM Monitoring](./docs/llm-monitoring.md) for details.
+
 ## Related Projects
 
 | Project | Description |
@@ -229,8 +241,9 @@ mux.Handle("/api", whataphttp.WrapHandler(h))      // Auto-wrapped
 For detailed developer guides, see the [docs/](./docs/) directory:
 
 - [Build Wrapper Mode](./docs/build-wrapper.md) - Simplest approach (recommended)
-- [Direct Source Modification](./docs/source-inject.md) - Separate directory output
+- [Inspect Transformed Source (`--output`)](./docs/source-inject.md) - Dump instrumented source for review
 - [Transformation Rules](./docs/instrumentation-rules.md) - Framework-specific patterns
+- [LLM Monitoring](./docs/llm-monitoring.md) - LLM SDK auto-instrumentation (sashabaranov, Eino, Anthropic, openai-go)
 - [User Guide](./docs/user-guide.md) - Detailed usage
 - [Custom Instrumentation](./docs/custom-instrumentation.md) - Define custom rules via YAML
 - [Multi-Module Projects](./docs/multi-module.md) - Working with multiple Go modules

@@ -1,6 +1,8 @@
 package config
 
 import (
+	"bytes"
+	"fmt"
 	"os"
 	"path/filepath"
 
@@ -222,9 +224,39 @@ func (l *Loader) parseYAMLFile(path string) (*Config, error) {
 		return nil, err
 	}
 
+	// Strict decoding (§227 Step 6): reject unknown top-level fields so
+	// typos like `rule:` / `adds:` / `import:` surface with a line number
+	// instead of being silently dropped. Note: `rules:` elements are stored
+	// as yaml.Node and later decoded in ast.LoadCustomRules — yaml.Node.Decode
+	// does NOT honor KnownFields, so field-level typos inside rules[i] are
+	// tracked separately (see §231).
 	cfg := &Config{}
-	if err := yaml.Unmarshal(data, cfg); err != nil {
+	dec := yaml.NewDecoder(bytes.NewReader(data))
+	dec.KnownFields(true)
+	if err := dec.Decode(cfg); err != nil {
 		return nil, err
+	}
+
+	// v0.5.5: append: true removed. Reject any surviving usage with a clear
+	// migration message so users hit this immediately instead of silently
+	// losing behavior.
+	for i, rule := range cfg.Add {
+		if rule.Append {
+			return nil, fmt.Errorf(
+				"config %s: add[%d] uses `append: true`, which was removed in v0.5.5.\n\n"+
+					"Migration — replace with a new-file add rule in the same package:\n\n"+
+					"  - package: %q\n"+
+					"    file: \"whatap_<name>_ext.go\"   # any name, avoid *_generated.go / *_test.go\n"+
+					"    content: |\n"+
+					"      package <pkgname>             # declare the package explicitly\n"+
+					"\n"+
+					"      import \"...\"                   # list every import used below\n"+
+					"\n"+
+					"      <your declarations>\n\n"+
+					"See docs/custom-instrumentation.md §11.3 (append → new-file add migration).",
+				path, i, rule.Package,
+			)
+		}
 	}
 
 	return cfg, nil

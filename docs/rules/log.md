@@ -7,39 +7,39 @@ Transformation rules for logging libraries. Connects log output to WhaTap logsin
 ```go
 import (
     "log"
-    "github.com/whatap/go-api/logsink"
+    whataplogsink "github.com/whatap/go-api/logsink"
     "os"
 )
 
 func main() {
     trace.Init(nil)
     defer trace.Shutdown()
-    log.SetOutput(logsink.GetTraceLogWriter(os.Stderr))  // Inserted
+    log.SetOutput(whataplogsink.GetTraceLogWriter(os.Stderr))  // Inserted
     // ...
 }
 ```
 
 | Original | After Transformation | Description |
 |----------|---------------------|-------------|
-| (none) | `log.SetOutput(logsink.GetTraceLogWriter(os.Stderr))` | Inserted after trace.Init |
+| (none) | `log.SetOutput(whataplogsink.GetTraceLogWriter(os.Stderr))` | Inserted after trace.Init |
 
 ### log.New() Instance Wrapping
 
-When `log.New()` is used to create a custom logger instance, the writer argument is automatically wrapped with `logsink.GetTraceLogWriter()`:
+When `log.New()` is used to create a custom logger instance, the writer argument is automatically wrapped with `whataplogsink.GetTraceLogWriter()`:
 
 ```go
 // Before
 logger := log.New(os.Stderr, "prefix: ", log.LstdFlags)
 
 // After
-logger := log.New(logsink.GetTraceLogWriter(os.Stderr), "prefix: ", log.LstdFlags)
+logger := log.New(whataplogsink.GetTraceLogWriter(os.Stderr), "prefix: ", log.LstdFlags)
 ```
 
 This transformation applies in all contexts: struct fields, return statements, function arguments, and variable assignments.
 
 | Original | After Transformation | Description |
 |----------|---------------------|-------------|
-| `log.New(w, prefix, flag)` | `log.New(logsink.GetTraceLogWriter(w), prefix, flag)` | Writer argument wrapped |
+| `log.New(w, prefix, flag)` | `log.New(whataplogsink.GetTraceLogWriter(w), prefix, flag)` | Writer argument wrapped |
 
 ---
 
@@ -48,21 +48,21 @@ This transformation applies in all contexts: struct fields, return statements, f
 ```go
 import (
     log "github.com/sirupsen/logrus"
-    "github.com/whatap/go-api/logsink"
+    whataplogsink "github.com/whatap/go-api/logsink"
     "os"
 )
 
 func main() {
     trace.Init(nil)
     defer trace.Shutdown()
-    log.SetOutput(logsink.GetTraceLogWriter(os.Stderr))  // Inserted
+    log.SetOutput(whataplogsink.GetTraceLogWriter(os.Stderr))  // Inserted
     // ...
 }
 ```
 
 | Original | After Transformation | Description |
 |----------|---------------------|-------------|
-| (none) | `log.SetOutput(logsink.GetTraceLogWriter(os.Stderr))` | Auto-recognizes alias |
+| (none) | `log.SetOutput(whataplogsink.GetTraceLogWriter(os.Stderr))` | Auto-recognizes alias |
 
 > **Note**: Automatically recognized even when logrus is aliased as `log`.
 
@@ -91,13 +91,13 @@ zap outputs directly to os.Stderr, so HookStderr() is used.
 ```go
 import (
     "go.uber.org/zap"
-    "github.com/whatap/go-api/logsink"
+    whataplogsink "github.com/whatap/go-api/logsink"
 )
 
 func main() {
     trace.Init(nil)
     defer trace.Shutdown()
-    logsink.HookStderr()  // Inserted
+    whataplogsink.HookStderr()  // Inserted
 
     logger, _ := zap.NewProduction()
     // ...
@@ -106,7 +106,7 @@ func main() {
 
 | Original | After Transformation | Description |
 |----------|---------------------|-------------|
-| (none) | `logsink.HookStderr()` | os.Stderr redirection |
+| (none) | `whataplogsink.HookStderr()` | os.Stderr redirection |
 
 > **Note**: zap uses pipe-based HookStderr(). Future improvement planned with zapcore.WriteSyncer integration.
 

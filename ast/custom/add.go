@@ -3,20 +3,23 @@ package custom
 import (
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/whatap/go-api-inst/config"
 )
 
-// ApplyAddRules applies new file creation rules (excluding append mode)
-// Must be executed before file processing at InjectDir level
-// baseDir: base directory for relative paths (config.BaseDir)
+// packageToPath converts a Go package path ("pkg/user") to a filesystem path
+// using the OS separator. (Inlined after §227 Step 5 deleted util.go.)
+func packageToPath(pkgPath string) string {
+	return strings.ReplaceAll(pkgPath, "/", string(filepath.Separator))
+}
+
+// ApplyAddRules creates new files from add rules. `append: true` was removed
+// in v0.5.5 — the yaml loader rejects it, so rules reaching this point are
+// always new-file creations. baseDir is the base directory for relative
+// paths (config.BaseDir).
 func ApplyAddRules(dstDir, baseDir string, rules []config.AddRule) error {
 	for _, rule := range rules {
-		// Process append mode later (after file copy)
-		if rule.Append {
-			continue
-		}
-
 		filePath := getAddFilePath(dstDir, rule)
 
 		// Determine content
@@ -50,59 +53,6 @@ func ApplyAddRules(dstDir, baseDir string, rules []config.AddRule) error {
 	return nil
 }
 
-// ApplyAppendRules appends code to existing files (called after file copy)
-// baseDir: base directory for relative paths (config.BaseDir)
-func ApplyAppendRules(dstDir, baseDir string, rules []config.AddRule) error {
-	for _, rule := range rules {
-		// Process append mode only
-		if !rule.Append {
-			continue
-		}
-
-		filePath := getAddFilePath(dstDir, rule)
-
-		// Determine content
-		content := rule.Content
-		if rule.ContentFile != "" {
-			// Resolve content_file path relative to baseDir
-			contentFilePath := resolveRelativePath(baseDir, rule.ContentFile)
-			data, err := os.ReadFile(contentFilePath)
-			if err != nil {
-				return err
-			}
-			content = string(data)
-		}
-
-		// Skip if content is empty
-		if content == "" {
-			continue
-		}
-
-		// Read existing file
-		existing, err := os.ReadFile(filePath)
-		if err != nil {
-			// Create new file if it doesn't exist
-			if os.IsNotExist(err) {
-				if err := os.MkdirAll(filepath.Dir(filePath), 0755); err != nil {
-					return err
-				}
-				return os.WriteFile(filePath, []byte(content), 0644)
-			}
-			return err
-		}
-
-		// Merge existing content + new content
-		newContent := string(existing) + "\n\n" + content
-
-		// Write file
-		if err := os.WriteFile(filePath, []byte(newContent), 0644); err != nil {
-			return err
-		}
-	}
-
-	return nil
-}
-
 // resolveRelativePath resolves a relative path based on baseDir
 // Returns the path as-is if it's an absolute path
 func resolveRelativePath(baseDir, path string) string {
@@ -121,16 +71,12 @@ func getAddFilePath(dstDir string, rule config.AddRule) string {
 	return filepath.Join(dstDir, pkgPath, rule.File)
 }
 
-// RemoveAddRules removes created files
+// RemoveAddRules deletes files created by add rules.
 func RemoveAddRules(dstDir string, rules []config.AddRule) error {
 	for _, rule := range rules {
-		// Only delete entire file if not in append mode
-		if !rule.Append {
-			pkgPath := packageToPath(rule.Package)
-			filePath := filepath.Join(dstDir, pkgPath, rule.File)
-			os.Remove(filePath)
-		}
-		// Append mode requires markers for accurate removal
+		pkgPath := packageToPath(rule.Package)
+		filePath := filepath.Join(dstDir, pkgPath, rule.File)
+		os.Remove(filePath)
 	}
 	return nil
 }

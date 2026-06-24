@@ -84,16 +84,16 @@ client, err := whatapmongo.NewClient(options.Client().ApplyURI(mongoURI))
 
 ## Aerospike
 
-### github.com/aerospike/aerospike-client-go (v6/v8)
+### github.com/aerospike/aerospike-client-go (v6)
 
 **Detection Pattern**: `aerospike.NewClient()`, `aerospike.NewClientWithPolicy()`, `client.Put()`, `client.Get()`, etc.
 
 **Inserted Import**:
 ```go
-import whatapsql "github.com/whatap/go-api/sql"
+import whatapdb "github.com/whatap/go-api/sql"
 ```
 
-> **Note**: Aerospike doesn't support Hook/Middleware, so it's instrumented with the generic `whatapsql.Wrap*` functions.
+> **Note**: Aerospike doesn't support Hook/Middleware, so it's instrumented with the generic `whatapdb.Wrap*` functions.
 
 **Transformation Rule (NewClient)**:
 ```go
@@ -101,7 +101,7 @@ import whatapsql "github.com/whatap/go-api/sql"
 client, err := aerospike.NewClient(host, port)
 
 // After
-client, err := whatapsql.WrapOpen(context.Background(), "aerospike", func() (*aerospike.Client, error) {
+client, err := whatapdb.WrapOpen(context.Background(), "aerospike", func() (*aerospike.Client, error) {
     return aerospike.NewClient(host, port)
 })
 ```
@@ -112,7 +112,7 @@ client, err := whatapsql.WrapOpen(context.Background(), "aerospike", func() (*ae
 err := client.Put(policy, key, bins)
 
 // After
-err := whatapsql.WrapError(context.Background(), "aerospike", "Put", func() error {
+err := whatapdb.WrapError(context.Background(), "aerospike", "Put", func() error {
     return client.Put(policy, key, bins)
 })
 ```
@@ -123,7 +123,7 @@ err := whatapsql.WrapError(context.Background(), "aerospike", "Put", func() erro
 record, err := client.Get(policy, key)
 
 // After
-record, err := whatapsql.Wrap(context.Background(), "aerospike", "Get", func() (*aerospike.Record, error) {
+record, err := whatapdb.Wrap(context.Background(), "aerospike", "Get", func() (*aerospike.Record, error) {
     return client.Get(policy, key)
 })
 ```
@@ -138,7 +138,7 @@ record, err := whatapsql.Wrap(context.Background(), "aerospike", "Get", func() (
 | `BatchGet`, `BatchGetHeader` | `Wrap` | `([]*Record, error)` |
 | `Query`, `ScanAll`, `ScanNode` | `Wrap` | `(*Recordset, error)` |
 
-> **Note**: go/types is used to automatically infer return types. Only v6 and v8 are supported. v5 and earlier, v7, v9+ are not supported and will be skipped.
+> **Note**: Return types are inferred automatically. Only v6 and v8 are supported. v5 and earlier, v7, v9+ are not supported and will be skipped.
 
 ---
 
@@ -207,10 +207,12 @@ s := grpc.NewServer()
 
 // After
 s := grpc.NewServer(
-    grpc.UnaryInterceptor(whatapgrpc.UnaryServerInterceptor()),
-    grpc.StreamInterceptor(whatapgrpc.StreamServerInterceptor()),
+    grpc.ChainUnaryInterceptor(whatapgrpc.UnaryServerInterceptor()),
+    grpc.ChainStreamInterceptor(whatapgrpc.StreamServerInterceptor()),
 )
 ```
+
+> **Why `Chain*`**: chaining options are additive, so the injected interceptor coexists with any interceptor the application already configured. The non-chaining `UnaryInterceptor` / `StreamInterceptor` options can be set only once and would panic at startup if the app already set them ("interceptor was already set and may not be reset").
 
 **Transformation Rule (Client)**:
 ```go
@@ -219,8 +221,8 @@ conn, err := grpc.Dial("localhost:50051", grpc.WithInsecure())
 
 // After
 conn, err := grpc.Dial("localhost:50051", grpc.WithInsecure(),
-    grpc.WithUnaryInterceptor(whatapgrpc.UnaryClientInterceptor()),
-    grpc.WithStreamInterceptor(whatapgrpc.StreamClientInterceptor()),
+    grpc.WithChainUnaryInterceptor(whatapgrpc.UnaryClientInterceptor()),
+    grpc.WithChainStreamInterceptor(whatapgrpc.StreamClientInterceptor()),
 )
 ```
 
@@ -272,11 +274,11 @@ clientset, err := kubernetes.NewForConfig(config)
 | `github.com/gomodule/redigo` | `.../gomodule/redigo/whatapredigo` |
 | `github.com/redis/go-redis/v9` | `.../redis/go-redis/v9/whatapgoredis` |
 | `go.mongodb.org/mongo-driver/mongo` | `.../go.mongodb.org/mongo-driver/mongo/whatapmongo` |
-| `github.com/aerospike/aerospike-client-go` | `github.com/whatap/go-api/sql` (alias: whatapsql) |
+| `github.com/aerospike/aerospike-client-go` | `github.com/whatap/go-api/sql` (alias: whatapdb) |
 | `github.com/IBM/sarama` | `.../IBM/sarama/whatapsarama` |
 | `github.com/Shopify/sarama` | `.../Shopify/sarama/whatapsarama` |
 | `google.golang.org/grpc` | `.../google.golang.org/grpc/whatapgrpc` |
 | `k8s.io/client-go` | `.../k8s.io/client-go/kubernetes/whatapkubernetes` |
 
 > **Note**: All paths are prefixed with `github.com/whatap/go-api/instrumentation/`
-> **Exception**: Aerospike uses the generic `whatapsql.Wrap*` functions.
+> **Exception**: Aerospike uses the generic `whatapdb.Wrap*` functions.

@@ -1,70 +1,62 @@
 # Build Wrapper Mode
 
-Wraps `go` commands to automatically inject instrumentation code.
+`whatap-go-inst` wraps `go` commands and transforms your Go source during compilation, without changing the files on disk. This is the **only** build mode since v0.6.0 — the legacy `--wrap` / `--no-output` flags and the `inject` / `generate` / `init` / `uninit` subcommands were removed. The build wrapper handles dependency add + instrumentation + build in a single step (no `init` / `go mod tidy` pre-step required).
 
 ## Overview
 
 ```bash
-# Build (no init required)
+# Build (no init required, no source modification on disk)
 whatap-go-inst go build ./...
+
+# Specify output binary
+whatap-go-inst go build -o myapp .
+
+# Run / Test also wrapped
+whatap-go-inst go run .
+whatap-go-inst go test ./...
 ```
+
+- The original `go.mod` / source tree is **never** modified.
+- `github.com/whatap/go-api` is added to `go.mod` automatically during the build (and rolled back for vendor projects).
+- Uses Go's build cache and incremental builds transparently.
 
 ---
 
 ## How It Works
 
-1. Copy source to temp directory
-2. Inject instrumentation code
-3. `go get github.com/whatap/go-api@latest` + `go mod tidy`
-4. Execute specified go command
-5. Save transformed source in `whatap-instrumented/` (unless `--no-output`)
-6. Delete temp directory
+1. Auto-add `github.com/whatap/go-api` dependency to `go.mod` (if missing) and run `go mod tidy`.
+2. **[vendor projects]** Make sure the whatap packages are present in `vendor/`.
+3. Look up where the whatap and standard-library packages are compiled, so they can be linked later.
+4. Build the project, transforming the source as each package is compiled. (Internally this uses Go's `-toolexec` mechanism — you never invoke it directly.)
+5. Make the newly added packages available to the Go linker.
+6. **[vendor]** Roll back `go.mod` / `go.sum` / `vendor/` to the original state.
 
-**Key characteristics:**
-- No init required — just build
-- Original go.mod is not modified (everything runs in temp directory)
-- Latest go-api version is automatically downloaded
-- `whatap-instrumented/` directory shows transformed source for debugging
+The transformed source is not written to disk unless you ask for it (see next section).
 
 ---
 
-## Usage
+## Inspect the transformed source (`--output`)
 
-### Build
-
-```bash
-# Build all packages
-whatap-go-inst go build ./...
-
-# Specify output file
-whatap-go-inst go build -o myapp .
-
-# Disable instrumented source output
-whatap-go-inst --no-output go build ./...
-
-# Save instrumented source to custom path
-whatap-go-inst --output ./instrumented go build ./...
-```
-
-### Run
+By default no instrumented source is saved (zero I/O overhead). Add `--output` to dump a buildable copy of the transformed tree:
 
 ```bash
-whatap-go-inst go run .
-whatap-go-inst go run . --port 8080
+# Default output directory: whatap-instrumented/
+whatap-go-inst --output go build ./...
+
+# Custom path
+whatap-go-inst --output=./instrumented go build ./...
+
+# Or via environment variable
+GO_API_AST_OUTPUT_DIR=./instrumented whatap-go-inst go build ./...
 ```
 
-### Test
-
-```bash
-whatap-go-inst go test ./...
-whatap-go-inst go test -v -run TestName ./pkg/...
-```
+The output directory is a **complete, buildable** Go project: transformed `.go` files, `go.mod`, `go.sum`, and (for `--external-module`) the `_modules/` subtree with `replace` directives. You can `cd ./instrumented && go build` without `whatap-go-inst` to verify the injection result.
 
 ---
 
 ## Example
 
-**Original code (main.go):**
+**Original code (`main.go`):**
 ```go
 package main
 
@@ -84,7 +76,7 @@ func main() {
 whatap-go-inst go build -o myapp .
 ```
 
-**Code actually running in the built binary:**
+**Code actually compiled into the binary:**
 ```go
 package main
 
@@ -138,7 +130,6 @@ RUN echo "license=your-license-key" > whatap.conf && \
     echo "app_name=myapp" >> whatap.conf
 
 ENV WHATAP_HOME=/app
-
 EXPOSE 8080
 CMD ["/bin/sh", "-c", "/usr/whatap/agent/whatap-agent start && ./server"]
 ```
@@ -157,13 +148,14 @@ GO_API_AST_DEBUG=1 whatap-go-inst go build ./...
 
 ## Notes
 
-1. **External packages are not transformed by default**: Use `--external-module` to instrument specific GOMODCACHE modules. See [Multi-Module Projects](./multi-module.md).
-2. **Standard library is not transformed**: Packages in GOROOT are skipped.
-3. **Test files are not transformed**: `_test.go` files are skipped.
+1. **External packages are not transformed by default.** Use `--external-module` to instrument specific GOMODCACHE modules. See [Multi-Module Projects](./multi-module.md).
+2. **Standard library is not transformed.** Packages in GOROOT are skipped.
+3. **Test files are not transformed.** `_test.go` files are skipped.
+4. **Legacy subcommands removed (v0.6.0):** `whatap-go-inst inject` / `generate` / `init` / `uninit` and the `--wrap` / `--no-output` flags no longer exist. Use `whatap-go-inst go build [--output[=DIR]]` for every workflow. The build wrapper handles dependency add + instrumentation + build in one step. (`whatap-go-inst remove` is still available for stripping manually written instrumentation calls.)
 
 ---
 
 ## Next Steps
 
-- [Source Inject Mode](./source-inject.md) — Direct source modification
+- [Source Inspection (`--output`)](./source-inject.md) — inspecting / diffing transformed source
 - [Multi-Module Projects](./multi-module.md)

@@ -68,34 +68,200 @@ type FileReport struct {
 	Changes      []string     `json:"changes,omitempty"`       // Change details
 	Error        string       `json:"error,omitempty"`         // Error message
 	Diagnostics  []Diagnostic `json:"diagnostics,omitempty"`   // Diagnostic messages
+	SizeBytes    int          `json:"size_bytes,omitempty"`    // §240 source file size
+	LineCount    int          `json:"line_count,omitempty"`    // §240 source line count
 }
 
 // Summary represents summary information
 type Summary struct {
-	Total                int `json:"total"`
-	Instrumented         int `json:"instrumented"`
-	Skipped              int `json:"skipped"`
-	Copied               int `json:"copied"`
-	Errors               int `json:"errors"`
-	Removed              int `json:"removed"`
-	Warnings             int `json:"warnings"`
-	SupportedLibraries   int `json:"supported_libraries"`
-	UnsupportedLibraries int `json:"unsupported_libraries"`
+	Total                int            `json:"total"`
+	Instrumented         int            `json:"instrumented"`
+	Skipped              int            `json:"skipped"`
+	Copied               int            `json:"copied"`
+	Errors               int            `json:"errors"`
+	Removed              int            `json:"removed"`
+	Warnings             int            `json:"warnings"`
+	SupportedLibraries   int            `json:"supported_libraries"`
+	UnsupportedLibraries int            `json:"unsupported_libraries"`
+	FragmentCount        int            `json:"fragment_count,omitempty"`  // §240 (§239 fragments merged by parent)
+	SkipReasons          map[string]int `json:"skip_reasons,omitempty"`    // §240 reason → count
+	ImportCfgFails       int            `json:"importcfg_fails,omitempty"` // §240 appendToImportCfg failures
+}
+
+// ConfigSnapshot captures the effective instrumentation configuration that
+// produced this report. Stored so the report is reproducible — readers can
+// see which packages the user opted in / excluded without having to chase
+// down the original whatap.yaml. §240 / §242.
+//
+// EnabledPackages / DisabledPackages hold the user-supplied lists verbatim.
+// Values are full Rule.Target package paths (e.g. "fmt",
+// "github.com/gin-gonic/gin"). §242 replaced the former Name-based values.
+type ConfigSnapshot struct {
+	EnabledPackages  []string `json:"enabled_packages,omitempty"`
+	DisabledPackages []string `json:"disabled_packages,omitempty"`
+	ExternalModules  []string `json:"external_modules,omitempty"`
+	ErrorTracking    bool     `json:"error_tracking,omitempty"`
+	OutputDir        string   `json:"output_dir,omitempty"`
+	CustomRuleCount  int      `json:"custom_rule_count,omitempty"` // len(cfg.Rules)
+	ConfigPath       string   `json:"config_path,omitempty"`
+}
+
+// BuildOutcome records how the go build subprocess finished. §240.
+type BuildOutcome struct {
+	Success  bool   `json:"success"`
+	ExitCode int    `json:"exit_code,omitempty"`
+	Error    string `json:"error,omitempty"`
+}
+
+// Environment captures the host runtime context so the report is reproducible
+// without remote access. §240.
+type Environment struct {
+	GoVersion   string `json:"go_version,omitempty"`   // runtime.Version()
+	GOOS        string `json:"goos,omitempty"`
+	GOARCH      string `json:"goarch,omitempty"`
+	CGOEnabled  string `json:"cgo_enabled,omitempty"`  // "1"/"0"/""
+	VendorMode  bool   `json:"vendor_mode,omitempty"`
+}
+
+// WhatapInfo captures the CLI's own identification. §240.
+type WhatapInfo struct {
+	Version   string `json:"version,omitempty"`
+	GitCommit string `json:"git_commit,omitempty"`
+	BuildDate string `json:"build_date,omitempty"`
+}
+
+// GoAPIInfo captures what go-api version the user's project is wired up to.
+// §240. `Replaced` + `ReplacePath` surfaces dev-workflow replace directives.
+type GoAPIInfo struct {
+	Version     string `json:"version,omitempty"`
+	Replaced    bool   `json:"replaced,omitempty"`
+	ReplacePath string `json:"replace_path,omitempty"`
+}
+
+// ModuleInfo captures the user's go.mod metadata. §240.
+type ModuleInfo struct {
+	Path      string `json:"path,omitempty"`
+	GoVersion string `json:"go_version,omitempty"`
+}
+
+// BuildInvocation captures how the user invoked whatap-go-inst + go build.
+// §240.
+type BuildInvocation struct {
+	SubCmd    string   `json:"sub_cmd,omitempty"`
+	BuildArgs []string `json:"build_args,omitempty"`
+}
+
+// Timings captures wall-clock seconds per build phase. §240.
+// Matches the [TIMING] debug lines runFastBuild already prints to stderr.
+type Timings struct {
+	DepSetup   float64 `json:"dep_setup,omitempty"`
+	PreResolve float64 `json:"pre_resolve,omitempty"`
+	GoBuild    float64 `json:"go_build,omitempty"`
+	Total      float64 `json:"total,omitempty"`
+}
+
+// PreResolveInfo surfaces the outcome of the whatap package pre-resolution
+// step. Useful to diagnose importcfg patch failures or missing archives. §240.
+type PreResolveInfo struct {
+	ResolvedCount    int      `json:"resolved_count,omitempty"`
+	ReplacedModules  []string `json:"replaced_modules,omitempty"`
+	ExternalModules  []string `json:"external_modules,omitempty"` // resolved expansions
 }
 
 // Report represents the full report
 type Report struct {
-	Timestamp    string       `json:"timestamp"`
-	Command      string       `json:"command"`
-	SourceDir    string       `json:"source_dir,omitempty"`
-	OutputDir    string       `json:"output_dir,omitempty"`
-	Summary      Summary      `json:"summary"`
-	Dependencies []Dependency `json:"dependencies,omitempty"`
-	Files        []FileReport `json:"files"`
+	Timestamp    string           `json:"timestamp"`
+	Command      string           `json:"command"`
+	SourceDir    string           `json:"source_dir,omitempty"`
+	OutputDir    string           `json:"output_dir,omitempty"`
+	Environment  *Environment     `json:"environment,omitempty"`
+	Whatap       *WhatapInfo      `json:"whatap,omitempty"`
+	GoAPI        *GoAPIInfo       `json:"go_api,omitempty"`
+	Module       *ModuleInfo      `json:"module,omitempty"`
+	Invocation   *BuildInvocation `json:"invocation,omitempty"`
+	Config       *ConfigSnapshot  `json:"config,omitempty"`
+	Build        *BuildOutcome    `json:"build,omitempty"`
+	Timings      *Timings         `json:"timings,omitempty"`
+	PreResolve   *PreResolveInfo  `json:"pre_resolve,omitempty"`
+	Summary      Summary          `json:"summary"`
+	Dependencies []Dependency     `json:"dependencies,omitempty"`
+	Files        []FileReport     `json:"files"`
 
 	mu       sync.Mutex   `json:"-"`
 	logLevel LogLevel     `json:"-"`
 	warnings []Diagnostic `json:"-"` // collected warnings for summary
+}
+
+// SetConfigSnapshot stores the effective config for the report. §240.
+func (r *Report) SetConfigSnapshot(snap *ConfigSnapshot) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.Config = snap
+}
+
+// SetBuildOutcome records the outcome of the underlying build subprocess.
+// Called by runFastBuild just before FinalizeReport so success and failure
+// are both captured. §240.
+func (r *Report) SetBuildOutcome(outcome *BuildOutcome) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.Build = outcome
+}
+
+// SetEnvironment records the host runtime context. §240.
+func (r *Report) SetEnvironment(env *Environment) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.Environment = env
+}
+
+// SetWhatap records whatap-go-inst CLI identification. §240.
+func (r *Report) SetWhatap(w *WhatapInfo) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.Whatap = w
+}
+
+// SetGoAPI records the go-api version + replace information. §240.
+func (r *Report) SetGoAPI(g *GoAPIInfo) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.GoAPI = g
+}
+
+// SetModule records user project module metadata. §240.
+func (r *Report) SetModule(m *ModuleInfo) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.Module = m
+}
+
+// SetInvocation records how the user invoked the CLI. §240.
+func (r *Report) SetInvocation(inv *BuildInvocation) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.Invocation = inv
+}
+
+// SetTimings records wall-clock phase durations. §240.
+func (r *Report) SetTimings(t *Timings) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.Timings = t
+}
+
+// SetPreResolve records the outcome of the pre-resolve step. §240.
+func (r *Report) SetPreResolve(pr *PreResolveInfo) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.PreResolve = pr
+}
+
+// SetFragmentCount stores how many fragment JSONs the parent merged. §240.
+func (r *Report) SetFragmentCount(n int) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.Summary.FragmentCount = n
 }
 
 // NewReport creates a new report
@@ -134,6 +300,14 @@ func (r *Report) AddFile(fr FileReport) {
 		r.Summary.Instrumented++
 	case StatusSkipped:
 		r.Summary.Skipped++
+		// §240: classify skip reasons so readers can see why files weren't
+		// touched without scrolling through the full Files array.
+		if fr.Reason != "" {
+			if r.Summary.SkipReasons == nil {
+				r.Summary.SkipReasons = make(map[string]int)
+			}
+			r.Summary.SkipReasons[fr.Reason]++
+		}
 	case StatusCopied:
 		r.Summary.Copied++
 	case StatusError:
@@ -335,6 +509,16 @@ func (r *Report) printWarnings() {
 
 // SaveJSON saves the report to a JSON file
 func (r *Report) SaveJSON(path string) error {
+	if err := r.SaveJSONQuiet(path); err != nil {
+		return err
+	}
+	fmt.Printf("📄 Report saved: %s\n", path)
+	return nil
+}
+
+// SaveJSONQuiet saves the report to a JSON file without printing to stdout.
+// §239: toolexec child processes use this to avoid polluting compiler output.
+func (r *Report) SaveJSONQuiet(path string) error {
 	data, err := json.MarshalIndent(r, "", "  ")
 	if err != nil {
 		return fmt.Errorf("marshal report: %w", err)
@@ -344,8 +528,59 @@ func (r *Report) SaveJSON(path string) error {
 		return fmt.Errorf("write report: %w", err)
 	}
 
-	fmt.Printf("📄 Report saved: %s\n", path)
 	return nil
+}
+
+// MergeFragment merges another report's per-file records into this report.
+// §239: Used by the parent `runFastBuild` process to aggregate fragment JSONs
+// produced by toolexec child processes. Only Files and counter-style Summary
+// fields are merged — Dependencies / Command / Timestamp / SourceDir / OutputDir
+// stay as the parent's authoritative values (SupportedLibraries / UnsupportedLibraries
+// are owned by the parent's dependency load).
+func (r *Report) MergeFragment(frag *Report) {
+	if frag == nil {
+		return
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	r.Files = append(r.Files, frag.Files...)
+	r.Summary.Total += frag.Summary.Total
+	r.Summary.Instrumented += frag.Summary.Instrumented
+	r.Summary.Skipped += frag.Summary.Skipped
+	r.Summary.Copied += frag.Summary.Copied
+	r.Summary.Errors += frag.Summary.Errors
+	r.Summary.Removed += frag.Summary.Removed
+	r.Summary.Warnings += frag.Summary.Warnings
+	r.Summary.ImportCfgFails += frag.Summary.ImportCfgFails
+	// §240: merge skip reasons. Null-safe — child fragments may omit the map.
+	for reason, n := range frag.Summary.SkipReasons {
+		if r.Summary.SkipReasons == nil {
+			r.Summary.SkipReasons = make(map[string]int)
+		}
+		r.Summary.SkipReasons[reason] += n
+	}
+}
+
+// IncImportCfgFail atomically bumps the importcfg-append failure counter. §240.
+func (r *Report) IncImportCfgFail() {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.Summary.ImportCfgFails++
+}
+
+// LoadJSONReport reads a report JSON file and returns a parsed Report.
+// §239: Used by the parent to read toolexec child fragment files.
+func LoadJSONReport(path string) (*Report, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+	var r Report
+	if err := json.Unmarshal(data, &r); err != nil {
+		return nil, err
+	}
+	return &r, nil
 }
 
 // Global report instance
@@ -369,16 +604,16 @@ func SetLevel(level LogLevel) {
 	Get().SetLogLevel(level)
 }
 
-// TransformerInfo holds transformer information for dependency matching
+// TransformerInfo holds transformer information for dependency matching.
+// §242 removed the former Name field — ImportPath is the single identifier
+// (e.g. "github.com/gin-gonic/gin", "fmt").
 type TransformerInfo struct {
-	Name              string
 	ImportPath        string
 	SupportedVersions []string // §148: supported major versions (nil = no filtering)
 }
 
 // transformerEntry holds transformer info for dependency matching
 type transformerEntry struct {
-	name              string
 	supportedVersions []string
 }
 
@@ -394,7 +629,6 @@ func (r *Report) LoadDependencies(goModPath string, transformers []TransformerIn
 	supportedPaths := make(map[string]transformerEntry)
 	for _, t := range transformers {
 		supportedPaths[t.ImportPath] = transformerEntry{
-			name:              t.Name,
 			supportedVersions: t.SupportedVersions,
 		}
 	}
@@ -500,7 +734,11 @@ func extractVersionFromPath(depPath string) string {
 	return ""
 }
 
-// matchTransformer checks if a dependency path matches any supported transformer
+// matchTransformer checks if a dependency path matches any supported
+// transformer. Returns the matched supported package path (e.g.
+// "github.com/gin-gonic/gin") when matched — §242 replaced the former Name
+// identifier with the full import path so the report's `transformer` field
+// ties directly to user yaml's `enabled_packages` / `disabled_packages`.
 func matchTransformer(depPath string, supportedPaths map[string]transformerEntry) (string, bool) {
 	// Direct match
 	if entry, ok := supportedPaths[depPath]; ok {
@@ -511,7 +749,7 @@ func matchTransformer(depPath string, supportedPaths map[string]transformerEntry
 				return "", false
 			}
 		}
-		return entry.name, true
+		return depPath, true
 	}
 
 	// Check if the dependency is a sub-package of a supported path
@@ -534,11 +772,11 @@ func matchTransformer(depPath string, supportedPaths map[string]transformerEntry
 					continue
 				}
 			}
-			return entry.name, true
+			return supportedPath, true
 		}
 		// Also check if supported path is a sub-package (e.g., go-redis/redis/v9)
 		if strings.HasPrefix(supportedPath, depPath+"/") {
-			return entry.name, true
+			return supportedPath, true
 		}
 	}
 

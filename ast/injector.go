@@ -16,42 +16,114 @@ import (
 	"github.com/dave/dst/decorator"
 )
 
-// Injector injects monitoring code into source files
+// Injector injects monitoring code into source files using the v2 engine.
 type Injector struct {
 	errorTracingInjected bool // whether error tracing code has been injected
 	ErrorTrackingEnabled bool // enabled via --error-tracking option
 
-	// EnabledPackages is the list of enabled packages (nil means all packages enabled)
-	// Set via Config.GetEnabledPackages()
-	EnabledPackages []string
+	// §242 — package-path filter. Values are full Rule.Target packages
+	// (e.g. "fmt", "github.com/gin-gonic/gin"). Replaces the former single
+	// EnabledPackages with Name keys.
+	EnabledPackages  []string // opt-in list; OptIn rules register only if listed here
+	DisabledPackages []string // exclusion list; rules register only if NOT listed here
+
+	// ReplacedModules is the list of go.mod replace directive module paths (§205).
+	ReplacedModules []string
+
+	// SkipReplacedModules controls whether the engine skips Rules whose target
+	// module appears in ReplacedModules (§205/§271). Default true preserves
+	// the pre-§227-Step-5 behaviour. Toggled by
+	// config.InstrumentationConfig.SkipReplacedModules.
+	SkipReplacedModules bool
 
 	// Config holds the full configuration (for custom rules access)
 	Config *config.Config
+
+	// typeChecker caches loaded packages for go/types type checking (§163)
+	typeChecker *common.TypeChecker
+
+	// registry holds v2 rules
+	registry *Registry
 }
 
-// NewInjector creates a new injector
+// NewInjector creates a new v2 injector with type checking enabled.
 func NewInjector() *Injector {
-	return &Injector{
-		ErrorTrackingEnabled: false, // default: disabled
-		EnabledPackages:      nil,   // default: all packages enabled
+	inj := &Injector{
+		ErrorTrackingEnabled: false,
+		SkipReplacedModules:  true, // §271 default — preserve §205 behaviour
+		typeChecker:          common.NewTypeChecker(),
 	}
+	inj.buildRegistry()
+	return inj
 }
 
-// isPackageEnabled checks if a package is enabled
-func (inj *Injector) isPackageEnabled(name string) bool {
-	// nil means all packages enabled (backward compatibility)
-	if inj.EnabledPackages == nil {
-		return true
-	}
-	for _, pkg := range inj.EnabledPackages {
-		if pkg == name {
-			return true
+// buildRegistry creates the v2 Registry from all declared rules.
+//
+// As of §227 Step 5 it loads two sources into the same registry:
+//  1. built-in 92 rules from rules.yaml (or rules.go fallback)
+//  2. user-defined rules from inj.Config (unified `rules:` schema, parsed by
+//     LoadCustomRules). Skipped silently when Config is nil — callers that
+//     attach a Config later should call SetConfig() so the registry is
+//     re-built with the user rules.
+func (inj *Injector) buildRegistry() {
+	inj.registry = NewRegistry()
+	inj.registry.SetPackageFilter(inj.EnabledPackages, inj.DisabledPackages)
+	builtins := LoadBuiltinRules()
+	// §242 Step 11 — warn (never fail) on user yaml paths that do not match
+	// any built-in rule. Run once against the full built-in set before the
+	// registry drops OptIn/disabled rules, so the warning reflects the user's
+	// config as-written.
+	ValidatePackageFilter(inj.EnabledPackages, inj.DisabledPackages, builtins)
+	for _, r := range builtins {
+		if r != nil {
+			inj.registry.Register(r)
 		}
 	}
-	return false
+	builtinCount := inj.registry.Size()
+	if inj.Config != nil {
+		userRules, err := LoadCustomRules(inj.Config)
+		if err != nil {
+			// Don't fail the whole build for a single bad user rule —
+			// surface it via stderr and continue with built-ins.
+			fmt.Fprintf(os.Stderr, "[whatap-go-inst] custom rules: %v\n", err)
+			return
+		}
+		for _, r := range userRules {
+			if r != nil {
+				inj.registry.RegisterUser(r)
+			}
+		}
+		if engineDebug {
+			fmt.Fprintf(os.Stderr, "[whatap-go-inst] buildRegistry: builtin=%d, user=%d, total=%d\n",
+				builtinCount, len(userRules), inj.registry.Size())
+		}
+	} else if engineDebug {
+		fmt.Fprintf(os.Stderr, "[whatap-go-inst] buildRegistry: builtin=%d (no Config)\n", builtinCount)
+	}
 }
 
-// InjectFile injects monitoring code into a single file
+// SetConfig attaches a config.Config to the injector and re-builds the
+// registry so user-defined rules from cfg.Rules are picked up. Use this
+// instead of the bare `inj.Config = cfg` assignment when the caller wants
+// custom rules to take effect.
+func (inj *Injector) SetConfig(cfg *config.Config) {
+	inj.Config = cfg
+	if cfg != nil {
+		inj.SkipReplacedModules = cfg.Instrumentation.ShouldSkipReplacedModules()
+	}
+	inj.buildRegistry()
+}
+
+// Rules returns the set of rules currently registered in the injector's
+// registry. Callers (notably the --report dependency matcher) read this to
+// stay in lock step with what the engine will actually apply at run time
+// — builtin rules after nameFilter, user rules, everything.
+// §240.
+func (inj *Injector) Rules() []*Rule {
+	return inj.registry.AllRules()
+}
+
+// InjectFile injects monitoring code into a single file using the v2 engine.
 func (inj *Injector) InjectFile(srcPath, dstPath string) error {
 	src, err := os.ReadFile(srcPath)
 	if err != nil {
@@ -73,15 +145,13 @@ func (inj *Injector) InjectFile(srcPath, dstPath string) error {
 		return inj.copyFile(srcPath, dstPath)
 	}
 
-	// Parse with dst (auto-preserves comments)
-	// CGO files (import "C") are parsed normally - dst handles them
-	file, err := decorator.Parse(src)
-	if err != nil {
-		// Copy as-is on parse failure (syntax error files, etc.)
+	// §169 Phase 1: Lightweight parse first (no type info, no packages.Load)
+	file, parseErr := decorator.Parse(src)
+	if parseErr != nil {
 		report.Get().AddFile(report.FileReport{
 			Path:   srcPath,
 			Status: report.StatusError,
-			Error:  fmt.Sprintf("parse error: %v", err),
+			Error:  fmt.Sprintf("parse error: %v", parseErr),
 			Reason: "copied as-is",
 		})
 		return inj.copyFile(srcPath, dstPath)
@@ -97,24 +167,15 @@ func (inj *Injector) InjectFile(srcPath, dstPath string) error {
 		return inj.copyFile(srcPath, dstPath)
 	}
 
-	// Check for main function first (determines whether to add trace.Init)
-	// §125: Use FindNonEmptyMainFunc to skip empty main() functions
+	// §169 Phase 2: Early filtering
 	hasMainFunc := common.FindNonEmptyMainFunc(file) != nil
 
-	// Phase 6: Use transformer registry
-	// Get only enabled transformers from detected packages in file
-	transformers := common.GetFilteredTransformers(file, inj.EnabledPackages)
+	hasCustomRules := inj.Config != nil && len(inj.Config.Rules) > 0
 
-	// Check if custom rules exist (§4)
-	hasCustomRules := inj.Config != nil && (len(inj.Config.Custom.Inject) > 0 ||
-		len(inj.Config.Custom.Replace) > 0 ||
-		len(inj.Config.Custom.Hook) > 0 ||
-		len(inj.Config.Custom.Transform) > 0)
+	// v2: Check if any rule targets could match imports in this file
+	hasTargetImports := inj.hasTargetImports(file)
 
-	// Copy as-is if no main function and no packages to transform
-	// However, if custom rules are defined, don't skip as they need to be applied
-	// Even with preset: minimal, trace.Init must be added if main function exists
-	if len(transformers) == 0 && !hasMainFunc && !hasCustomRules {
+	if !hasTargetImports && !hasMainFunc && !hasCustomRules {
 		report.Get().AddFile(report.FileReport{
 			Path:   srcPath,
 			Status: report.StatusSkipped,
@@ -123,23 +184,32 @@ func (inj *Injector) InjectFile(srcPath, dstPath string) error {
 		return inj.copyFile(srcPath, dstPath)
 	}
 
-	// For recording changes
-	var changes []string
-	var transformerNames []string
-
-	// Determine trace package alias (detect name conflicts)
-	traceAlias := "trace"
-	if common.IsNameDeclared(file, "trace") {
-		traceAlias = "whataptrace"
+	// §169 Phase 3: Load type info only for files that need injection (~20%)
+	if common.HasImportcfgTypeCache() {
+		typedFile := common.TrySetupTypeContextFromImportcfg(srcPath)
+		if typedFile != nil {
+			file = typedFile
+			hasMainFunc = common.FindNonEmptyMainFunc(file) != nil
+		}
+		defer common.ClearTypeContext()
+	} else if inj.typeChecker != nil {
+		typedFile := common.TrySetupTypeContext(inj.typeChecker, srcPath)
+		if typedFile != nil {
+			file = typedFile
+			hasMainFunc = common.FindNonEmptyMainFunc(file) != nil
+		}
+		defer common.ClearTypeContext()
 	}
 
+	// §169 Phase 4: Inject
+	var changes []string
+
+	// §185: Always use "whataptrace" alias
+	traceAlias := "whataptrace"
+
 	if hasMainFunc {
-		if traceAlias == "trace" {
-			common.AddImport(file, `"github.com/whatap/go-api/trace"`)
-		} else {
-			common.AddImportWithAlias(file, "github.com/whatap/go-api/trace", traceAlias)
-		}
-		changes = append(changes, "added import: github.com/whatap/go-api/trace")
+		common.AddImportWithAlias(file, "github.com/whatap/go-api/trace", traceAlias)
+		changes = append(changes, "added import: github.com/whatap/go-api/trace (alias whataptrace)")
 	}
 
 	// Add trace.Init/Shutdown to main() function
@@ -149,98 +219,73 @@ func (inj *Injector) InjectFile(srcPath, dstPath string) error {
 	}
 	inj.injectMainInit(file, traceAlias)
 
-	// Phase 6: Call transformer.Inject()
-	// TypedTransformer uses go/types to get type information
-	// §54: Add whatap import only when Inject() returns true
-	srcDir := filepath.Dir(srcPath)
-	k8sProcessed := false
-	for _, t := range transformers {
-		// k8s and k8srest use the same injection, so prevent duplicates
-		name := t.Name()
-		if name == "k8s" || name == "k8srest" {
-			if k8sProcessed {
-				continue
-			}
-			k8sProcessed = true
-		}
+	// v2 Engine: single traversal with target-based matching
+	engine := NewEngine(inj.registry, ModeInject, newResolveFunc())
+	// §271 — wire go.mod replace skip-list through to the engine
+	engine.SetReplacedModules(inj.ReplacedModules)
+	engine.SetSkipReplacedModules(inj.SkipReplacedModules)
+	engineTransformed := engine.Process(file)
 
-		// If TypedTransformer interface is implemented, call with directory info
-		var transformed bool
-		var injErr error
-		if typed, ok := t.(common.TypedTransformer); ok {
-			transformed, injErr = typed.InjectWithDir(file, srcDir)
-		} else {
-			transformed, injErr = t.Inject(file)
-		}
-
-		if injErr != nil {
-			report.Get().AddFile(report.FileReport{
-				Path:   srcPath,
-				Status: report.StatusError,
-				Error:  fmt.Sprintf("inject %s: %v", name, injErr),
-			})
-			return fmt.Errorf("inject %s: %w", name, injErr)
-		}
-
-		// §54: Add whatap import only when actual transformation occurred
-		if transformed {
-			whatapImport := t.WhatapImport()
-			if whatapImport != "" {
-				// Use alias if AliasedImportTransformer is implemented
-				if aliased, ok := t.(common.AliasedImportTransformer); ok {
-					alias := aliased.WhatapImportAlias()
-					common.AddImportWithAlias(file, whatapImport, alias)
-					changes = append(changes, fmt.Sprintf("added import: %s (alias: %s)", whatapImport, alias))
-				} else {
-					common.AddImport(file, `"`+whatapImport+`"`)
-					changes = append(changes, fmt.Sprintf("added import: %s", whatapImport))
-				}
-			}
-			transformerNames = append(transformerNames, t.Name())
-			changes = append(changes, fmt.Sprintf("applied: %s transformer", name))
-		}
+	if engineTransformed {
+		changes = append(changes, "applied: v2 engine rules")
 	}
 
 	// Inject error tracing code (only if --error-tracking option is enabled)
-	// Default is disabled (whatap package already tracks errors, avoid duplicates)
 	if inj.ErrorTrackingEnabled {
 		inj.injectErrorTracing(file)
 		changes = append(changes, "added: error tracing")
 	}
 
-	// Apply custom rules (§4) (only if config exists)
-	if inj.Config != nil {
-		customChanges, err := inj.applyCustomRules(file, srcDir)
-		if err != nil {
-			report.Get().AddFile(report.FileReport{
-				Path:   srcPath,
-				Status: report.StatusError,
-				Error:  fmt.Sprintf("apply custom rules: %v", err),
-			})
-			return fmt.Errorf("apply custom rules: %w", err)
-		}
-		changes = append(changes, customChanges...)
-	}
+	// §227 Step 5: custom rules now live in the v2 Engine registry
+	// (see buildRegistry) and run as part of engine.Process above. The
+	// legacy applyCustomRules() pass has been removed.
 
 	// Record in report
+	status := report.StatusInstrumented
+	if !hasMainFunc && !engineTransformed && !hasCustomRules {
+		status = report.StatusSkipped
+	}
+	// §240: record file size/line count so report has rough per-file metrics
+	// for remote diagnosis (e.g., large files that failed, tiny skipped ones).
+	lineCount := 1
+	for _, b := range src {
+		if b == '\n' {
+			lineCount++
+		}
+	}
 	report.Get().AddFile(report.FileReport{
-		Path:         srcPath,
-		Status:       report.StatusInstrumented,
-		Transformers: transformerNames,
-		Changes:      changes,
+		Path:      srcPath,
+		Status:    status,
+		Changes:   changes,
+		SizeBytes: len(src),
+		LineCount: lineCount,
 	})
-
-	// NOTE: Unused import cleanup is handled by each transformer's RemoveImportIfUnused call.
-	// CleanupAllUnusedImports was removed because it incorrectly removes imports like
-	// "gopkg.in/yaml.v3" (parsed as "yaml.v3" instead of "yaml").
 
 	// Generate result file
 	return inj.writeFile(file, dstPath)
 }
 
+// hasTargetImports checks if the file imports any package that has registered rules.
+// This is a lightweight check for Phase 2 early filtering.
+func (inj *Injector) hasTargetImports(file *dst.File) bool {
+	if inj.registry.Size() == 0 {
+		return false
+	}
+	// Check each import against registered rules
+	for _, imp := range file.Imports {
+		importPath := strings.Trim(imp.Path.Value, `"`)
+		// Check if any rule target starts with this import path
+		for _, rule := range inj.registry.AllRules() {
+			if strings.HasPrefix(rule.Target, importPath+".") {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 // InjectDir injects monitoring code into all Go files in a directory
 func (inj *Injector) InjectDir(srcDir, dstDir string) error {
-	// Convert to absolute paths
 	absSrcDir, err := filepath.Abs(srcDir)
 	if err != nil {
 		return err
@@ -250,20 +295,19 @@ func (inj *Injector) InjectDir(srcDir, dstDir string) error {
 		return err
 	}
 
-	// §4 Add rules: Create new files before file processing (except append)
-	if inj.Config != nil && len(inj.Config.Custom.Add) > 0 {
-		if err := custom.ApplyAddRules(dstDir, inj.Config.BaseDir, inj.Config.Custom.Add); err != nil {
+	// §227 Step 5: Add rules now live at cfg.Add (top-level). Engine 밖
+	// 처리는 그대로 — ast/custom/add.go 가 cfg.Add 를 소비.
+	if inj.Config != nil && len(inj.Config.Add) > 0 {
+		if err := custom.ApplyAddRules(dstDir, inj.Config.BaseDir, inj.Config.Add); err != nil {
 			return fmt.Errorf("apply add rules: %w", err)
 		}
 	}
 
-	// Process files
 	walkErr := filepath.Walk(srcDir, func(path string, info os.FileInfo, err error) error {
 		if err != nil {
 			return err
 		}
 
-		// Convert to absolute path
 		absPath, err := filepath.Abs(path)
 		if err != nil {
 			return err
@@ -304,14 +348,13 @@ func (inj *Injector) InjectDir(srcDir, dstDir string) error {
 			return os.MkdirAll(dstPath, 0755)
 		}
 
-		// Process only .go files (skip based on exclude patterns)
+		// Process only .go files
 		if strings.HasSuffix(path, ".go") {
 			var excludePatterns []string
 			if inj.Config != nil {
 				excludePatterns = inj.Config.GetExcludePatterns()
 			}
 			if common.ShouldSkipFile(path, absSrcDir, excludePatterns) {
-				// Copy instead of inject
 				report.Get().AddFile(report.FileReport{
 					Path:   path,
 					Status: report.StatusCopied,
@@ -335,18 +378,10 @@ func (inj *Injector) InjectDir(srcDir, dstDir string) error {
 		return walkErr
 	}
 
-	// §4 Append rules: Add code to existing files after file copy
-	if inj.Config != nil && len(inj.Config.Custom.Add) > 0 {
-		if err := custom.ApplyAppendRules(dstDir, inj.Config.BaseDir, inj.Config.Custom.Add); err != nil {
-			return fmt.Errorf("apply append rules: %w", err)
-		}
-	}
-
 	return nil
 }
 
 // injectMainInit adds trace.Init/Shutdown to main() function
-// traceAlias: alias for trace package (default "trace", "whataptrace" on name conflict)
 func (inj *Injector) injectMainInit(file *dst.File, traceAlias string) {
 	dst.Inspect(file, func(n dst.Node) bool {
 		fn, ok := n.(*dst.FuncDecl)
@@ -358,7 +393,6 @@ func (inj *Injector) injectMainInit(file *dst.File, traceAlias string) {
 			return true
 		}
 
-		// Create trace.Init(nil) statement
 		initStmt := &dst.ExprStmt{
 			X: &dst.CallExpr{
 				Fun: &dst.SelectorExpr{
@@ -370,7 +404,6 @@ func (inj *Injector) injectMainInit(file *dst.File, traceAlias string) {
 		}
 		initStmt.Decs.After = dst.NewLine
 
-		// Create defer trace.Shutdown() statement
 		shutdownStmt := &dst.DeferStmt{
 			Call: &dst.CallExpr{
 				Fun: &dst.SelectorExpr{
@@ -381,7 +414,6 @@ func (inj *Injector) injectMainInit(file *dst.File, traceAlias string) {
 		}
 		shutdownStmt.Decs.After = dst.NewLine
 
-		// Insert before existing statements
 		newList := make([]dst.Stmt, 0, len(fn.Body.List)+2)
 		newList = append(newList, initStmt, shutdownStmt)
 		newList = append(newList, fn.Body.List...)
@@ -393,32 +425,12 @@ func (inj *Injector) injectMainInit(file *dst.File, traceAlias string) {
 
 // writeFile writes the transformed file to disk
 func (inj *Injector) writeFile(file *dst.File, dstPath string) error {
-	dir := filepath.Dir(dstPath)
-	if err := os.MkdirAll(dir, 0755); err != nil {
-		return err
-	}
-
-	f, err := os.Create(dstPath)
-	if err != nil {
-		return err
-	}
-	defer f.Close()
-
-	return decorator.Fprint(f, file)
+	return common.WriteDstFile(file, dstPath)
 }
 
 // copyFile copies a file
-func (inj *Injector) copyFile(src, dst string) error {
-	dir := filepath.Dir(dst)
-	if err := os.MkdirAll(dir, 0755); err != nil {
-		return err
-	}
-
-	data, err := os.ReadFile(src)
-	if err != nil {
-		return err
-	}
-	return os.WriteFile(dst, data, 0644)
+func (inj *Injector) copyFile(src, dstPath string) error {
+	return common.CopyFile(src, dstPath)
 }
 
 // injectErrorTracing injects error tracing code into the file
@@ -429,17 +441,11 @@ func (inj *Injector) injectErrorTracing(file *dst.File) {
 		if !ok || fn.Body == nil {
 			continue
 		}
-
-		// Skip main function (error before trace.Init should not occur)
 		if fn.Name.Name == "main" && fn.Recv == nil {
 			continue
 		}
-
-		// Traverse all if statements in function body
 		fn.Body.List = inj.processStmtsForErrorTracing(fn.Body.List)
 	}
-
-	// Add context import if error tracing was injected
 	if inj.errorTracingInjected {
 		common.AddImport(file, "context")
 	}
@@ -448,19 +454,15 @@ func (inj *Injector) injectErrorTracing(file *dst.File) {
 // processStmtsForErrorTracing processes error check patterns in statement list
 func (inj *Injector) processStmtsForErrorTracing(stmts []dst.Stmt) []dst.Stmt {
 	var newStmts []dst.Stmt
-	var prevStmt dst.Stmt // Track previous statement
+	var prevStmt dst.Stmt
 
 	for i, stmt := range stmts {
 		newStmts = append(newStmts, stmt)
 
-		// Skip if err != nil immediately after whatap package call
 		skipErrorTracing := false
 		if prevStmt != nil && inj.isWhatapPackageCall(prevStmt) {
 			if _, ok := stmt.(*dst.IfStmt); ok {
 				skipErrorTracing = true
-				if os.Getenv("GO_API_AST_DEBUG") != "" {
-					fmt.Println("[DEBUG] Skipping trace.Error injection after whatap package call")
-				}
 			}
 		}
 
@@ -468,18 +470,13 @@ func (inj *Injector) processStmtsForErrorTracing(stmts []dst.Stmt) []dst.Stmt {
 			inj.processStmtForErrorTracing(stmt)
 		}
 
-		// Handle if err == nil { return } pattern
 		if ifStmt, ok := stmt.(*dst.IfStmt); ok {
-			// Skip if immediately after whatap call
 			if prevStmt != nil && inj.isWhatapPackageCall(prevStmt) {
 				prevStmt = stmt
 				continue
 			}
-
 			errVarName := inj.getErrEqualNilVarName(ifStmt.Cond)
 			if errVarName != "" && inj.blockHasReturn(ifStmt.Body) {
-				// If if block has return, insert trace.Error after if statement
-				// Only if there are following statements (subsequent code is err != nil case)
 				if i < len(stmts)-1 {
 					traceErrorStmt := inj.createTraceErrorStmt(errVarName)
 					newStmts = append(newStmts, traceErrorStmt)
@@ -498,23 +495,16 @@ func (inj *Injector) processStmtsForErrorTracing(stmts []dst.Stmt) []dst.Stmt {
 func (inj *Injector) processStmtForErrorTracing(stmt dst.Stmt) {
 	switch s := stmt.(type) {
 	case *dst.IfStmt:
-		// Check if it's if err != nil pattern
 		errVarName := inj.getErrCheckVarName(s.Cond)
 		if errVarName != "" {
-			// Insert trace.Error before return statement in if block
 			inj.insertTraceErrorBeforeReturn(s.Body, errVarName)
 		}
-
-		// Handle if err == nil { } else { return } pattern
 		errEqualNilVarName := inj.getErrEqualNilVarName(s.Cond)
 		if errEqualNilVarName != "" && s.Else != nil {
-			// Insert trace.Error before return in else block
 			if elseBlock, ok := s.Else.(*dst.BlockStmt); ok {
 				inj.insertTraceErrorBeforeReturn(elseBlock, errEqualNilVarName)
 			}
 		}
-
-		// Recursively process else block
 		if s.Else != nil {
 			if elseBlock, ok := s.Else.(*dst.BlockStmt); ok {
 				elseBlock.List = inj.processStmtsForErrorTracing(elseBlock.List)
@@ -522,23 +512,17 @@ func (inj *Injector) processStmtForErrorTracing(stmt dst.Stmt) {
 				inj.processStmtForErrorTracing(elseIf)
 			}
 		}
-
-		// Also process nested if inside if block
 		s.Body.List = inj.processStmtsForErrorTracing(s.Body.List)
-
 	case *dst.BlockStmt:
 		s.List = inj.processStmtsForErrorTracing(s.List)
-
 	case *dst.ForStmt:
 		if s.Body != nil {
 			s.Body.List = inj.processStmtsForErrorTracing(s.Body.List)
 		}
-
 	case *dst.RangeStmt:
 		if s.Body != nil {
 			s.Body.List = inj.processStmtsForErrorTracing(s.Body.List)
 		}
-
 	case *dst.SwitchStmt:
 		if s.Body != nil {
 			for _, clause := range s.Body.List {
@@ -547,7 +531,6 @@ func (inj *Injector) processStmtForErrorTracing(stmt dst.Stmt) {
 				}
 			}
 		}
-
 	case *dst.SelectStmt:
 		if s.Body != nil {
 			for _, clause := range s.Body.List {
@@ -559,55 +542,38 @@ func (inj *Injector) processStmtForErrorTracing(stmt dst.Stmt) {
 	}
 }
 
-// getErrCheckVarName extracts error variable name from err != nil condition
-// Returns: error variable name (err, e, etc.) or empty string
 func (inj *Injector) getErrCheckVarName(cond dst.Expr) string {
-	// err != nil pattern
 	binExpr, ok := cond.(*dst.BinaryExpr)
 	if !ok || binExpr.Op != token.NEQ {
 		return ""
 	}
-
-	// Check if right side is nil
 	if ident, ok := binExpr.Y.(*dst.Ident); !ok || ident.Name != "nil" {
 		return ""
 	}
-
-	// Check if left side is err variable
 	if ident, ok := binExpr.X.(*dst.Ident); ok {
-		// Names that look like error variables: err, e, error
 		if ident.Name == "err" || ident.Name == "e" || ident.Name == "error" {
 			return ident.Name
 		}
 	}
-
 	return ""
 }
 
-// getErrEqualNilVarName extracts error variable name from err == nil condition
 func (inj *Injector) getErrEqualNilVarName(cond dst.Expr) string {
-	// err == nil pattern
 	binExpr, ok := cond.(*dst.BinaryExpr)
 	if !ok || binExpr.Op != token.EQL {
 		return ""
 	}
-
-	// Check if right side is nil
 	if ident, ok := binExpr.Y.(*dst.Ident); !ok || ident.Name != "nil" {
 		return ""
 	}
-
-	// Check if left side is err variable
 	if ident, ok := binExpr.X.(*dst.Ident); ok {
 		if ident.Name == "err" || ident.Name == "e" || ident.Name == "error" {
 			return ident.Name
 		}
 	}
-
 	return ""
 }
 
-// blockHasReturn checks if block contains a return statement
 func (inj *Injector) blockHasReturn(block *dst.BlockStmt) bool {
 	for _, stmt := range block.List {
 		if _, ok := stmt.(*dst.ReturnStmt); ok {
@@ -617,12 +583,11 @@ func (inj *Injector) blockHasReturn(block *dst.BlockStmt) bool {
 	return false
 }
 
-// createTraceErrorStmt creates trace.Error(context.Background(), err) statement
 func (inj *Injector) createTraceErrorStmt(errVarName string) *dst.ExprStmt {
 	stmt := &dst.ExprStmt{
 		X: &dst.CallExpr{
 			Fun: &dst.SelectorExpr{
-				X:   dst.NewIdent("trace"),
+				X:   dst.NewIdent("whataptrace"),
 				Sel: dst.NewIdent("Error"),
 			},
 			Args: []dst.Expr{
@@ -640,24 +605,18 @@ func (inj *Injector) createTraceErrorStmt(errVarName string) *dst.ExprStmt {
 	return stmt
 }
 
-// insertTraceErrorBeforeReturn inserts trace.Error(err) before return statement
 func (inj *Injector) insertTraceErrorBeforeReturn(block *dst.BlockStmt, errVarName string) {
 	var newList []dst.Stmt
-
 	for _, stmt := range block.List {
-		// Check if it's a return statement
 		if _, ok := stmt.(*dst.ReturnStmt); ok {
-			// Check if trace.Error already exists (prevent duplicates)
 			if len(newList) > 0 && inj.isTraceErrorCall(newList[len(newList)-1], errVarName) {
 				newList = append(newList, stmt)
 				continue
 			}
-
-			// Create trace.Error(ctx, err) statement
 			traceErrorStmt := &dst.ExprStmt{
 				X: &dst.CallExpr{
 					Fun: &dst.SelectorExpr{
-						X:   dst.NewIdent("trace"),
+						X:   dst.NewIdent("whataptrace"),
 						Sel: dst.NewIdent("Error"),
 					},
 					Args: []dst.Expr{
@@ -672,148 +631,67 @@ func (inj *Injector) insertTraceErrorBeforeReturn(block *dst.BlockStmt, errVarNa
 				},
 			}
 			traceErrorStmt.Decs.After = dst.NewLine
-
 			newList = append(newList, traceErrorStmt, stmt)
 			inj.errorTracingInjected = true
 		} else {
 			newList = append(newList, stmt)
 		}
 	}
-
 	block.List = newList
 }
 
-// isTraceErrorCall checks if statement is trace.Error(err) call
 func (inj *Injector) isTraceErrorCall(stmt dst.Stmt, errVarName string) bool {
 	exprStmt, ok := stmt.(*dst.ExprStmt)
 	if !ok {
 		return false
 	}
-
 	call, ok := exprStmt.X.(*dst.CallExpr)
 	if !ok {
 		return false
 	}
-
 	sel, ok := call.Fun.(*dst.SelectorExpr)
 	if !ok {
 		return false
 	}
-
 	ident, ok := sel.X.(*dst.Ident)
 	if !ok {
 		return false
 	}
-
-	return ident.Name == "trace" && sel.Sel.Name == "Error"
+	return (common.MatchIdentPkg(ident, "trace", "github.com/whatap/go-api/trace") ||
+		common.MatchIdentPkg(ident, "whataptrace", "github.com/whatap/go-api/trace")) && sel.Sel.Name == "Error"
 }
 
-// isWhatapPackageCall checks if statement is a whatap package function call
-// e.g., resp, err := whataphttp.HttpGet(ctx, url)
-// e.g., db, err := whatapsql.Open("mysql", dsn)
 func (inj *Injector) isWhatapPackageCall(stmt dst.Stmt) bool {
-	// Check if AssignStmt (x, err := func() pattern)
 	assignStmt, ok := stmt.(*dst.AssignStmt)
 	if !ok {
 		return false
 	}
-
-	// Check if right side is a function call
 	if len(assignStmt.Rhs) != 1 {
 		return false
 	}
-
 	call, ok := assignStmt.Rhs[0].(*dst.CallExpr)
 	if !ok {
 		return false
 	}
-
-	// Check if function is a selector (package.function form)
 	sel, ok := call.Fun.(*dst.SelectorExpr)
 	if !ok {
 		return false
 	}
-
-	// Check package name
 	ident, ok := sel.X.(*dst.Ident)
 	if !ok {
 		return false
 	}
-
-	// Check if it's a whatap package
-	pkgName := ident.Name
-	whatapPackages := []string{
-		"whatapsql",
-		"whatapsqlx",
-		"whataphttp",
-		"whatapredigo",
-		"whatapgoredis",
-		"whatapgorm",
-		"whatapsarama",
-		"whatapgin",
-		"whatapecho",
-		"whatapfiber",
-		"whatapchi",
-		"whatapmux",
-		"whatapfasthttp",
-		"whatapgrpc",
-		"whatapkubernetes",
-		"whatapmongo",
-		"trace", // includes trace.Start, trace.StartMethod, etc.
-	}
-
-	for _, wp := range whatapPackages {
-		if pkgName == wp {
-			return true
+	if common.HasTypeInfo() {
+		identPath := common.GetIdentPath(ident)
+		if identPath != "" {
+			return strings.HasPrefix(identPath, "github.com/whatap/")
 		}
 	}
-
-	return false
+	return strings.HasPrefix(ident.Name, "whatap")
 }
 
-// applyCustomRules applies custom rules (§4)
-// Execution order: inject → replace → hook → transform
-// (add is executed before file processing in InjectDir())
-func (inj *Injector) applyCustomRules(file *dst.File, srcDir string) ([]string, error) {
-	var changes []string
-
-	if inj.Config == nil {
-		return nil, nil
-	}
-
-	cfg := inj.Config.Custom
-
-	// 1. inject rules: Insert code inside function definitions
-	if len(cfg.Inject) > 0 {
-		if err := custom.ApplyInjectRules(file, cfg.Inject, srcDir); err != nil {
-			return changes, fmt.Errorf("inject rules: %w", err)
-		}
-		changes = append(changes, fmt.Sprintf("applied: %d inject rule(s)", len(cfg.Inject)))
-	}
-
-	// 2. replace rules: Replace function calls
-	if len(cfg.Replace) > 0 {
-		if err := custom.ApplyReplaceRules(file, cfg.Replace); err != nil {
-			return changes, fmt.Errorf("replace rules: %w", err)
-		}
-		changes = append(changes, fmt.Sprintf("applied: %d replace rule(s)", len(cfg.Replace)))
-	}
-
-	// 3. hook rules: Insert before/after function calls
-	if len(cfg.Hook) > 0 {
-		if err := custom.ApplyHookRules(file, cfg.Hook); err != nil {
-			return changes, fmt.Errorf("hook rules: %w", err)
-		}
-		changes = append(changes, fmt.Sprintf("applied: %d hook rule(s)", len(cfg.Hook)))
-	}
-
-	// 4. transform rules: Template-based transformation
-	if len(cfg.Transform) > 0 {
-		if err := custom.ApplyTransformRules(file, inj.Config.BaseDir, cfg.Transform); err != nil {
-			return changes, fmt.Errorf("transform rules: %w", err)
-		}
-		changes = append(changes, fmt.Sprintf("applied: %d transform rule(s)", len(cfg.Transform)))
-	}
-
-	return changes, nil
-}
+// (§227 Step 5: applyCustomRules removed — custom rules are now registered
+// in the v2 Engine registry via buildRegistry/LoadCustomRules and execute
+// during the same single AST pass as built-in rules. The legacy ast/custom/
+// {replace,hook,inject,transform} files are deleted in the same step;
+// add.go remains for the Engine-out file-creation rules.)

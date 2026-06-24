@@ -172,14 +172,14 @@ r := whatapchi.WrapRouter(chi.NewRouter())
 
 ## github.com/gorilla/mux
 
-**Detection Pattern**: `mux.NewRouter()`
+**Detection Pattern**: `mux.NewRouter()`, `.Subrouter()`
 
 **Inserted Import**:
 ```go
 import "github.com/whatap/go-api/instrumentation/github.com/gorilla/mux/whatapmux"
 ```
 
-**Transformation Rule**:
+**Transformation Rules**:
 ```go
 // Before
 r := mux.NewRouter()
@@ -188,7 +188,19 @@ r := mux.NewRouter()
 r := whatapmux.WrapRouter(mux.NewRouter())
 ```
 
-> **Note**: Uses in-place wrapping (not middleware insertion). `WrapRouter` internally calls `r.Use(Middleware())` and returns the router.
+### Subrouter
+
+gorilla/mux `Subrouter()` does **not** inherit parent router's `Use()` middleware. The tool automatically wraps Subrouter calls:
+
+```go
+// Before
+api := r.PathPrefix("/api").Subrouter()
+
+// After
+api := whatapmux.WrapRouter(r.PathPrefix("/api").Subrouter())
+```
+
+> **Note**: Uses in-place wrapping (not middleware insertion). `WrapRouter` internally calls `r.Use(Middleware())` and returns the router. When both `NewRouter()` and `Subrouter()` are wrapped, duplicate transactions are automatically skipped.
 
 **Signature**: `whatapmux.WrapRouter(*mux.Router) *mux.Router`
 
@@ -419,7 +431,7 @@ s := &fasthttp.Server{
 | `labstack/echo/v4` | `echo.New()` | `e.Use(whatapecho.Middleware())` | Function call | `WrapEcho()` |
 | `gofiber/fiber/v2` | `fiber.New()` | `app.Use(whatapfiber.Middleware())` | Function call | `WrapApp()` |
 | `go-chi/chi` | `chi.NewRouter()` | `whatapchi.WrapRouter(chi.NewRouter())` | In-place wrap | `WrapRouter()` |
-| `gorilla/mux` | `mux.NewRouter()` | `whatapmux.WrapRouter(mux.NewRouter())` | In-place wrap | `WrapRouter()` |
+| `gorilla/mux` | `mux.NewRouter()`, `.Subrouter()` | `whatapmux.WrapRouter(...)` | In-place wrap | `WrapRouter()` |
 | `net/http` | `http.Server{Handler}` | `whataphttp.WrapHandler(handler)` | Struct literal | `WrapHandler()` |
 | `valyala/fasthttp` | `fasthttp.Server{Handler}` | `whatapfasthttp.WrapHandler(handler)` | Struct literal | `WrapHandler()` |
 

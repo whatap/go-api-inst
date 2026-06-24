@@ -16,20 +16,32 @@ var (
 
 var removeCmd = &cobra.Command{
 	Use:   "remove",
-	Short: "Remove monitoring code from source code",
-	Long: `Automatically removes whatap/go-api monitoring code from target Go source code.
+	Short: "Clean up manually written whatap/go-api code from a source tree",
+	Long: `Removes hand-written whatap/go-api imports and calls from a Go source tree.
+
+Primary use case: migrating from manual SDK usage to auto-instrumentation
+(toolexec build wrapper). The build wrapper rewrites code in $WORK only, so
+its output never reaches your source tree — stopping the wrapper is enough
+to revert auto-injected changes. 'remove' exists to clean up the *manually
+written* whatap calls and imports you may have left in the tree from an
+earlier manual integration.
 
 Removed content:
-  - trace.Init/Shutdown initialization code
-  - Web framework middleware
-  - HTTP client tracing code
-  - Database tracing code
+  - whatap/go-api imports
+  - trace.Init / trace.Shutdown initialization (in main)
+  - Standalone statements: trace.Step / trace.End / defer trace.End / logsink.* / etc.
+  - AddHook(whatap…) method calls
+  - Error-tracing scaffolding added by previous '--error-tracking' runs
+  - Wrapped function calls — restored to their originals (e.g. whatapsql.Open(...) → sql.Open(...)).
+    Covers 25 ReplaceFunction patterns across sql / sqlx / gorm / go-redis / redigo / mongo / fmt.
 
---all option:
-  Also removes manually inserted patterns beyond inject patterns.
-  - Standalone statements like trace.Step(), trace.Println()
-  - AddHook() method calls
-  - Non-removable patterns (Start/End pairs, Wrap closures) will show warnings`,
+Patterns kept (with warnings) for manual review:
+  - Variable assignments whose RHS is a whatap call (e.g. ctx, _ := trace.Start(...))
+  - Struct field assignments using whatap values
+  - Closures / factories (whatapsql.Wrap, *.NewClient) where removing the wrapper
+    changes program semantics
+
+See §272 for the design rationale.`,
 	Run: func(cmd *cobra.Command, args []string) {
 		// Initialize report
 		InitReport("remove")
@@ -44,9 +56,6 @@ Removed content:
 		if !quiet {
 			fmt.Printf("Source path: %s\n", removeSrc)
 			fmt.Printf("Output path: %s\n", removeOutput)
-			if removeAll {
-				fmt.Println("Mode: --all (including manually inserted patterns)")
-			}
 			fmt.Println()
 		}
 
@@ -57,7 +66,11 @@ Removed content:
 			os.Exit(1)
 		}
 
-		remover := ast.NewRemover(removeAll)
+		// §272 — manual pattern removal is the default; removeAll is a no-op
+		// but we pass true so any internal RemoveAll-gated logic in older
+		// code paths stays inert with the same behaviour.
+		_ = removeAll
+		remover := ast.NewRemover(true)
 
 		if info.IsDir() {
 			// Directory processing
@@ -82,6 +95,10 @@ func init() {
 	removeCmd.Flags().StringVarP(&removeSrc, "src", "s", ".", "Source code path")
 	// Add -o shorthand for output (--output is inherited from rootCmd PersistentFlags)
 	removeCmd.Flags().StringVarP(&outputDir, "output", "o", "", "Output directory (default: ./output)")
-	removeCmd.Flags().BoolVar(&removeAll, "all", false, "Also remove manually inserted patterns (standalone statements, AddHook, etc.)")
+	removeCmd.Flags().BoolVar(&removeAll, "all", false, "DEPRECATED — manual pattern removal is the default since §272; this flag is a no-op")
+	if err := removeCmd.Flags().MarkDeprecated("all", "manual pattern removal is the default since §272; this flag is a no-op (will be removed in a future version)"); err != nil {
+		// Cobra returns an error only if the flag name doesn't exist; ignore safely.
+		_ = err
+	}
 	rootCmd.AddCommand(removeCmd)
 }

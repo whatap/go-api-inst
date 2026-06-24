@@ -20,7 +20,7 @@ github.com/dave/dst/decorator.(*fileDecorator).fragment.func1(...)
 `dst.Parse()` causes nil pointer dereference when **0-byte empty .go files** exist in the project.
 
 ### Solution
-1. **Use whatap-go-inst v0.x.x or later** - Empty files are automatically skipped
+1. **Use whatap-go-inst v0.5.0 or later** - Empty files are automatically skipped
 2. Or delete/modify empty files:
    ```bash
    # Find empty files
@@ -98,7 +98,7 @@ echo 'package main' > problematic_file.go
 In gorilla mux projects, the nethttp transformer detects `HandleFunc` and adds unnecessary whataphttp import.
 
 ### Solution
-Use whatap-go-inst v0.x.x or later - whataphttp is excluded when gorilla mux is detected.
+Use whatap-go-inst v0.5.0 or later - whataphttp is excluded when gorilla mux is detected.
 
 ---
 
@@ -114,7 +114,7 @@ as *"github.com/redis/go-redis/v9".Options value
 v9 whatapgoredis is injected into a go-redis v8 project.
 
 ### Solution
-Use whatap-go-inst v0.x.x or later - v8/v9 is automatically detected.
+Use whatap-go-inst v0.5.0 or later - v8/v9 is automatically detected.
 
 ---
 
@@ -130,7 +130,7 @@ as "github.com/labstack/echo".MiddlewareFunc value
 v4 whatapecho is injected into an Echo v3 project.
 
 ### Solution
-Use whatap-go-inst v0.x.x or later - v3/v4 is automatically detected.
+Use whatap-go-inst v0.5.0 or later - v3/v4 is automatically detected.
 
 ---
 
@@ -161,16 +161,17 @@ go: ../some-local-path: no such file or directory
 ```
 
 ### Cause
-go.mod's replace directive uses a relative path, which doesn't work when copied to a temporary directory in wrapper mode.
+go.mod's `replace` directive uses a relative path. In some setups the path can not be resolved from the build's working directory.
 
 ### Solution
-whatap-go-inst automatically adjusts replace relative paths. If the problem persists:
-1. Use absolute paths
-2. Or use inject mode:
+whatap-go-inst automatically adjusts `replace` relative paths. If the problem persists:
+1. Use absolute paths in `go.mod` replace directives.
+2. Or dump the instrumented source and build it locally from that tree:
    ```bash
-   whatap-go-inst inject -s ./myproject -o ./output
+   whatap-go-inst --output=./output go build ./...
    cd output && go build ./...
    ```
+   This produces a self-contained, instrumented copy you can compile without the wrapper.
 
 ---
 
@@ -244,6 +245,55 @@ GO_API_AST_DEBUG=1 whatap-go-inst go build ./...
 - Or wait for support to be added for your version
 
 See [Supported Versions](./rules/versions.md) for the full version matrix.
+
+---
+
+## 11. Latency Regression on High-Frequency Log Apps (fmt instrumentation)
+
+### Symptoms
+After instrumenting a high-throughput logging app (e.g., Loki, Promtail, log shippers), p99 latency rises noticeably (observed on the Loki 2.9.x benchmark).
+
+### Cause
+By default, `whatap-go-inst` replaces `fmt.Print` / `fmt.Printf` / `fmt.Println` calls with `whatapfmt.*` wrappers that forward each line into the WhaTap logsink. Apps that call `fmt.Print*` hundreds or thousands of times per request put the `appendToLogsink` hot path on the critical path of every request.
+
+Observed on the Loki 2.9.x benchmark: including `fmt` instrumentation noticeably increases p99, while excluding `fmt` keeps p99 within noise of the original build. Excluding `fmt` alone removes almost all of the regression.
+
+### Solution (legacy preset schema)
+Add `fmt` to `disabled_packages` in `.whatap/config.yaml`:
+
+```yaml
+instrumentation:
+  preset: full        # legacy schema only — the preset field is removed in v0.6.0
+  disabled_packages:
+    - fmt
+```
+
+Effects:
+- `whatapfmt` is no longer imported (verify with `grep -c whatapfmt` on the build log — should be 0)
+- `fmt.Print*` calls stay unchanged — zero runtime overhead
+- Trade-off: `fmt`-emitted log lines are **not** forwarded to the WhaTap logsink. Transaction/metric collection is unaffected.
+
+### After v0.6.0 (current schema)
+`fmt.Print/Printf/Println` are now **opt-in** in the built-in rules. No configuration is needed for typical apps. If you still want `fmt` logs in the WhaTap logsink, add:
+
+```yaml
+instrumentation:
+  enabled_packages:
+    - fmt
+```
+
+The `preset` field has been removed entirely; see [config.md](./config.md#migration-from-the-legacy-preset-schema) for the full migration table.
+
+### Known affected profile
+High-frequency logging pipelines:
+- Loki, Promtail, Vector, Fluent Bit (Go variants)
+- log aggregators and notifiers that iterate over a write-heavy inner loop using `fmt.Print*`
+
+Ordinary web/API apps that log a few lines per request are **not** affected in practice.
+
+### Related changes (v0.6.0)
+- Configuration API redesign — preset removed, an opt-in flag introduced, `enabled_packages` / `disabled_packages` switched to full-path exact match (breaking change)
+- `whatapfmt` early-return for `logsink_enabled=false`
 
 ---
 

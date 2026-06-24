@@ -391,20 +391,26 @@ func IsPackageUsed(file *dst.File, packageName string) bool {
 	return used
 }
 
-// RemoveImportIfUnused removes an import if the package is not used in the file.
-// importPath is the full import path (e.g., "net/http", "database/sql")
-// packageName is the identifier used in code (e.g., "http", "sql")
-// Also cleans up empty import blocks.
-func RemoveImportIfUnused(file *dst.File, importPath, packageName string) {
-	if IsPackageUsed(file, packageName) {
-		return
+// §272 Phase 3 Step 4 — removed RemoveImportIfUnused (ModeRemove-only).
+
+// GetImportPathSet returns a set of all import paths in the file.
+func GetImportPathSet(file *dst.File) map[string]bool {
+	result := make(map[string]bool)
+	for _, decl := range file.Decls {
+		genDecl, ok := decl.(*dst.GenDecl)
+		if !ok || genDecl.Tok != token.IMPORT {
+			continue
+		}
+		for _, spec := range genDecl.Specs {
+			importSpec, ok := spec.(*dst.ImportSpec)
+			if !ok {
+				continue
+			}
+			importPath := strings.Trim(importSpec.Path.Value, `"`)
+			result[importPath] = true
+		}
 	}
-
-	// Remove the import
-	RemoveImport(file, importPath)
-
-	// Clean up empty import declarations
-	CleanupEmptyImports(file)
+	return result
 }
 
 // CleanupEmptyImports removes empty import declaration blocks from the file.
@@ -426,45 +432,6 @@ func CleanupEmptyImports(file *dst.File) {
 	file.Decls = newDecls
 }
 
-// CleanupAllUnusedImports removes all unused imports from the file.
-// This should be called at the end of injection after all transformers have run.
-// It checks each import and removes it if the package is not used in the code.
-func CleanupAllUnusedImports(file *dst.File) {
-	// Collect imports to check (copy to avoid modifying while iterating)
-	importsToCheck := make([]*dst.ImportSpec, len(file.Imports))
-	copy(importsToCheck, file.Imports)
-
-	for _, imp := range importsToCheck {
-		path := strings.Trim(imp.Path.Value, `"`)
-
-		// Skip blank imports (e.g., _ "github.com/lib/pq")
-		if imp.Name != nil && imp.Name.Name == "_" {
-			continue
-		}
-
-		// Skip dot imports (e.g., . "math")
-		if imp.Name != nil && imp.Name.Name == "." {
-			continue
-		}
-
-		// Get package name used in code
-		var pkgName string
-		if imp.Name != nil {
-			pkgName = imp.Name.Name
-		} else {
-			pkgName = getDefaultPackageName(path)
-		}
-
-		// Remove import if package is not used
-		if !IsPackageUsed(file, pkgName) {
-			RemoveImport(file, path)
-		}
-	}
-
-	// Clean up empty import blocks
-	CleanupEmptyImports(file)
-}
-
 // getDefaultPackageName extracts the default package name from an import path.
 // Handles version suffixes like /v2, /v9 - uses the segment before the version.
 // Examples:
@@ -472,6 +439,11 @@ func CleanupAllUnusedImports(file *dst.File) {
 //   - "github.com/go-redis/redis/v8" → "redis"
 //   - "gorm.io/gorm" → "gorm"
 //   - "net/http" → "http"
+// DefaultPackageName extracts the default package name from an import path (exported).
+func DefaultPackageName(importPath string) string {
+	return getDefaultPackageName(importPath)
+}
+
 func getDefaultPackageName(importPath string) string {
 	parts := strings.Split(importPath, "/")
 	if len(parts) == 0 {

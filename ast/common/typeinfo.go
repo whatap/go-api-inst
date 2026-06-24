@@ -6,6 +6,7 @@ import (
 	"go/ast"
 	"go/token"
 	"go/types"
+	"runtime/debug"
 	"strings"
 	"sync"
 
@@ -46,7 +47,7 @@ func (tc *TypeChecker) LoadPackage(dir string) (*packages.Package, error) {
 
 	cfg := &packages.Config{
 		Mode: packages.NeedTypes | packages.NeedTypesInfo | packages.NeedSyntax |
-			packages.NeedImports | packages.NeedDeps | packages.NeedName,
+			packages.NeedImports | packages.NeedName,
 		Dir:  dir,
 		Fset: tc.fset,
 	}
@@ -76,6 +77,20 @@ func (tc *TypeChecker) LoadPackage(dir string) (*packages.Package, error) {
 	tc.mu.Unlock()
 
 	return pkg, nil
+}
+
+// EvictExcept removes all cached packages except the one for keepDir.
+// This allows GC of previous packages.Load results (which hold transitive dependency references).
+// Called on directory transition to bound peak memory to 1 packages.Load at a time.
+func (tc *TypeChecker) EvictExcept(keepDir string) {
+	tc.mu.Lock()
+	for dir := range tc.pkgs {
+		if dir != keepDir {
+			delete(tc.pkgs, dir)
+		}
+	}
+	tc.mu.Unlock()
+	debug.FreeOSMemory() // Force GC and return freed memory to OS immediately
 }
 
 // MethodReturnType represents the return type(s) of a method.

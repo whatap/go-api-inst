@@ -20,12 +20,27 @@ func ShouldSkipPath(path string, basePath string, excludePatterns []string) bool
 		return true
 	}
 
-	// Use default patterns if not specified
+	return matchExcludePatterns(path, basePath, excludePatterns)
+}
+
+// ShouldSkipFile checks if a file should be skipped (convenience wrapper)
+func ShouldSkipFile(filePath string, basePath string, excludePatterns []string) bool {
+	return ShouldSkipPath(filePath, basePath, excludePatterns)
+}
+
+// ShouldSkipFileExcludeOnly checks exclude patterns only, without system path (GOROOT/GOMODCACHE) check.
+// Used by fast (toolexec) mode where GOMODCACHE should not be skipped (§174).
+func ShouldSkipFileExcludeOnly(filePath string, basePath string, excludePatterns []string) bool {
+	return matchExcludePatterns(filePath, basePath, excludePatterns)
+}
+
+// matchExcludePatterns checks if a path matches any exclude pattern.
+// Shared by ShouldSkipPath and ShouldSkipFileExcludeOnly.
+func matchExcludePatterns(path string, basePath string, excludePatterns []string) bool {
 	if excludePatterns == nil {
 		excludePatterns = config.DefaultExcludePatterns
 	}
 
-	// Get relative path for pattern matching
 	relPath := path
 	if basePath != "" && filepath.IsAbs(path) {
 		if rel, err := filepath.Rel(basePath, path); err == nil {
@@ -33,10 +48,8 @@ func ShouldSkipPath(path string, basePath string, excludePatterns []string) bool
 		}
 	}
 
-	// Normalize path separators for cross-platform matching
 	relPath = filepath.ToSlash(relPath)
 
-	// Check exclude patterns
 	for _, pattern := range excludePatterns {
 		matched, err := doublestar.Match(pattern, relPath)
 		if err == nil && matched {
@@ -54,11 +67,6 @@ func ShouldSkipPath(path string, basePath string, excludePatterns []string) bool
 	}
 
 	return false
-}
-
-// ShouldSkipFile checks if a file should be skipped (convenience wrapper)
-func ShouldSkipFile(filePath string, basePath string, excludePatterns []string) bool {
-	return ShouldSkipPath(filePath, basePath, excludePatterns)
 }
 
 // ShouldSkipDirectory checks if a directory should be skipped

@@ -1,6 +1,6 @@
 # whatap-go-inst
 
-Go AST-based automatic instrumentation tool for WhaTap APM monitoring.
+Go AST-based automatic instrumentation — adds WhaTap APM monitoring to your Go application at build time, with no source code changes.
 
 ## Quick Start
 
@@ -15,19 +15,22 @@ sudo mv whatap-go-inst /usr/local/bin/
 whatap-go-inst go build ./...
 ```
 
-### Direct Source Modification
+### Inspect Transformed Source
 
 ```bash
-whatap-go-inst inject -s ./myapp -o ./instrumented
-cd instrumented && go get github.com/whatap/go-api@latest && go build .
+# Dump the instrumented copy alongside the build (originals stay untouched)
+whatap-go-inst --output=./instrumented go build -o myapp ./...
 ```
 
-## Instrumentation Modes
+## Instrumentation Workflow
 
-| Mode | Command | Source Changes | Use Case |
-|------|---------|---------------|----------|
-| [Build Wrapper](./build-wrapper.md) | `whatap-go-inst go build` | No | **Recommended** |
-| [Source Modify](./source-inject.md) | `whatap-go-inst inject` | Yes (separate dir) | Review/Compare |
+| Command | Source Changes | Use Case |
+|---------|---------------|----------|
+| `whatap-go-inst go build` | None | **Default** — builds instrumented binary |
+| `whatap-go-inst --output go build` | None (dumps transformed copy to `whatap-instrumented/`) | Review / CI artifact / diff |
+| `whatap-go-inst --output=./dir go build` | None (dumps to `./dir`) | Custom inspection path |
+
+> Legacy `whatap-go-inst inject` / `whatap-go-inst generate` / `whatap-go-inst init` / `whatap-go-inst uninit` subcommands and `--wrap` / `--no-output` flags were removed in v0.6.0. The build wrapper + `--output` combo is the single workflow (handles dependency add + instrumentation + build in one step). **`whatap-go-inst remove` is still shipped** — it strips manually written instrumentation calls (not needed in the default build-wrapper flow because the originals are never modified).
 
 ## Documentation
 
@@ -35,11 +38,12 @@ cd instrumented && go get github.com/whatap/go-api@latest && go build .
 |----------|-------------|
 | [User Guide](./user-guide.md) | Full CLI reference, options, commands |
 | [Build Wrapper Mode](./build-wrapper.md) | Build wrapper details |
-| [Source Inject Mode](./source-inject.md) | Direct source modification |
+| [Inspect Transformed Source (`--output`)](./source-inject.md) | Dump instrumented source for review |
 | [Multi-Module Projects](./multi-module.md) | External module and multi-module instrumentation |
 | [Configuration Guide](./config.md) | Config file, presets, packages |
 | [Custom Instrumentation](./custom-instrumentation.md) | User-defined instrumentation rules (5 types) |
 | [Instrumentation Rules](./instrumentation-rules.md) | Transformation patterns per framework |
+| [LLM Monitoring](./llm-monitoring.md) | LLM API call monitoring — auto-inject + manual API + URL auto-match |
 | [Troubleshooting](./troubleshooting.md) | Common errors and solutions |
 
 ## Supported Frameworks

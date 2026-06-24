@@ -1,24 +1,6 @@
 package config
 
-// Preset is the instrumentation preset type
-type Preset string
-
-const (
-	// PresetFull enables all packages (default)
-	PresetFull Preset = "full"
-	// PresetMinimal enables trace only (minimal configuration)
-	PresetMinimal Preset = "minimal"
-	// PresetWeb enables web frameworks only
-	PresetWeb Preset = "web"
-	// PresetDatabase enables databases only
-	PresetDatabase Preset = "database"
-	// PresetExternal enables external services only (Redis, Kafka, gRPC, etc.)
-	PresetExternal Preset = "external"
-	// PresetLog enables log libraries only
-	PresetLog Preset = "log"
-	// PresetCustom uses custom configuration (EnabledPackages/DisabledPackages)
-	PresetCustom Preset = "custom"
-)
+import "gopkg.in/yaml.v3"
 
 // DefaultCopyExcludeDirs are the default directories to skip when copying source files
 var DefaultCopyExcludeDirs = []string{
@@ -68,41 +50,34 @@ var SystemSkipPaths = []string{
 	"GOMODCACHE",
 }
 
-// PresetPackages is the list of packages included in each preset
-var PresetPackages = map[Preset][]string{
-	PresetMinimal: {},
-	PresetWeb: {
-		"gin", "echo", "fiber", "chi", "gorilla", "nethttp", "fasthttp",
-	},
-	PresetDatabase: {
-		"sql", "sqlx", "gorm", "jinzhugorm",
-	},
-	PresetExternal: {
-		"redigo", "goredis", "mongo", "aerospike", "sarama", "grpc", "k8s",
-	},
-	PresetLog: {
-		"fmt", "log", "logrus", "zap",
-	},
-	PresetFull: {
-		// Web frameworks
-		"gin", "echo", "fiber", "chi", "gorilla", "nethttp", "fasthttp",
-		// Databases
-		"sql", "sqlx", "gorm", "jinzhugorm",
-		// External services
-		"redigo", "goredis", "mongo", "aerospike", "sarama", "grpc", "k8s",
-		// Log libraries
-		"fmt", "log", "logrus", "zap",
-	},
-}
-
 // Config is the whatap-go-inst configuration struct
 // Loaded from CLI options, environment variables, and config files
 type Config struct {
+	// Version is the rules schema version (§227 Step 4). Currently only 1
+	// is recognised. Optional — absence is tolerated for forward compat but
+	// the legacy CustomConfig path no longer exists (removed in §227 Step 5).
+	Version int `yaml:"version,omitempty"`
+
 	// Instrumentation contains instrumentation-related settings
 	Instrumentation InstrumentationConfig `yaml:"instrumentation"`
 
-	// Custom contains user-defined instrumentation rules (§4)
-	Custom CustomConfig `yaml:"custom"`
+	// Add is the top-level `add:` array (§227 Step 5). Engine 밖 처리 —
+	// `ast/custom/add.go` 가 소비. 다른 user 규칙은 unified `rules:` 배열
+	// 에 들어간다.
+	Add []AddRule `yaml:"add,omitempty"`
+
+	// Imports lists file-global imports for the new unified rules (§227 Step 4).
+	// Merged with rule-level imports inside ast.LoadCustomRules.
+	Imports []string `yaml:"imports,omitempty"`
+
+	// ImportAliases is the file-global alias→path map for the new unified rules.
+	// Merged with rule-level importAliases inside ast.LoadCustomRules.
+	ImportAliases map[string]string `yaml:"importAliases,omitempty"`
+
+	// Rules is the unified Rule list (§227 Step 4). Each element is a yaml.Node
+	// so that rule decoding (type discriminator + per-type fields) lives in the
+	// ast package — keeps the config package free of an ast import cycle.
+	Rules []yaml.Node `yaml:"rules,omitempty"`
 
 	// Exclude is file patterns to exclude from instrumentation
 	Exclude []string `yaml:"exclude"`
@@ -122,25 +97,6 @@ type Config struct {
 	BaseDir string `yaml:"-"`
 }
 
-// CustomConfig is user-defined instrumentation settings (§4)
-// Execution order: Add → Inject → Replace → Hook → Transform
-type CustomConfig struct {
-	// Add creates new files/functions (executed first)
-	Add []AddRule `yaml:"add"`
-
-	// Inject inserts code inside function definitions
-	Inject []InjectRule `yaml:"inject"`
-
-	// Replace replaces function calls
-	Replace []ReplaceRule `yaml:"replace"`
-
-	// Hook inserts code before/after function calls
-	Hook []HookRule `yaml:"hook"`
-
-	// Transform replaces code patterns with templates (universal)
-	Transform []TransformRule `yaml:"transform"`
-}
-
 // InstrumentationConfig is instrumentation options
 type InstrumentationConfig struct {
 	// ErrorTracking enables error tracking code injection (--error-tracking)
@@ -152,112 +108,69 @@ type InstrumentationConfig struct {
 	// OutputDir is the output directory for instrumented source (GO_API_AST_OUTPUT_DIR)
 	OutputDir string `yaml:"output_dir"`
 
-	// Preset is the instrumentation preset (full, minimal, web, database, external, custom)
-	// Default: full (all packages enabled)
-	Preset Preset `yaml:"preset"`
-
-	// EnabledPackages is the list of packages to enable (preset=custom or additional)
-	// e.g., ["gin", "sql", "redis"]
-	EnabledPackages []string `yaml:"enabled_packages"`
-
-	// DisabledPackages is the list of packages to disable (excluded from preset)
-	// e.g., ["grpc", "k8s"]
+	// §242 — EnabledPackages opts in to rules whose `optin: true` is set
+	// (e.g. `fmt`). DisabledPackages removes rules whose package path is in
+	// the list. Both use full Rule.Target package paths:
+	//   - stdlib:  "fmt", "database/sql", "log"
+	//   - modules: "github.com/gin-gonic/gin", "github.com/labstack/echo/v4"
+	// Matching is exact — "github.com/labstack/echo" does NOT match v4.
+	EnabledPackages  []string `yaml:"enabled_packages"`
 	DisabledPackages []string `yaml:"disabled_packages"`
+
+	// §271 — SkipReplacedModules controls whether the v2 engine skips Rules
+	// whose target module appears in a go.mod `replace` directive. Default
+	// (nil pointer) is true — preserves §205 behaviour (safer: forks may
+	// have incompatible APIs that break the whatap wrap). Set to false only
+	// when you know your replace target is signature-compatible with the
+	// original and you want instrumentation applied anyway.
+	SkipReplacedModules *bool `yaml:"skip_replaced_modules,omitempty"`
 }
 
-// AddRule is a rule for creating new files/functions
+// ShouldSkipReplacedModules returns the effective value of
+// SkipReplacedModules with nil treated as the default (true).
+func (c InstrumentationConfig) ShouldSkipReplacedModules() bool {
+	if c.SkipReplacedModules == nil {
+		return true
+	}
+	return *c.SkipReplacedModules
+}
+
+// AddRule is a rule for creating a new file in a target package.
+//
+// Content must be a complete Go source file — `package <name>` declaration,
+// any `import` statements, and the declarations themselves. The tool writes
+// the content verbatim; there is no auto-wrapping.
+//
+// File must not match the default exclude patterns (`**/*_generated.go`,
+// `**/*_gen.go`, `**/*_test.go`, etc.) or fast mode's toolexec will skip
+// instrumentation of the file. Naming convention: `whatap_*.go` or
+// `<yourmod>_ext.go`.
+//
+// Existing files are never overwritten — the build aborts with an error if
+// the target path already exists.
 type AddRule struct {
-	// Package is the target package path (e.g., "myapp/helper")
+	// Package is the target package path relative to the project root
+	// (e.g., "pkg/user", "main", or "."). "main"/"."/"" map to the project
+	// root.
 	Package string `yaml:"package"`
 
-	// File is the filename to create/modify (e.g., "whatap_helper.go")
+	// File is the filename to create (e.g., "whatap_helper.go").
 	File string `yaml:"file"`
 
-	// Content is inline code
+	// Content is the inline Go source. Must start with `package <name>` —
+	// see type doc for contract.
 	Content string `yaml:"content"`
 
-	// ContentFile is the code file path (use instead of Content)
+	// ContentFile is a filesystem path (relative to the config file's
+	// directory) whose contents are used instead of Content.
 	ContentFile string `yaml:"content_file"`
 
-	// Append: true appends to existing file, false creates new file
-	Append bool `yaml:"append"`
-}
-
-// InjectRule is a rule for inserting code inside function definitions
-// Note: Can only target user-defined functions (within current module)
-type InjectRule struct {
-	// Package is the Go import path (e.g., "myapp/service")
-	Package string `yaml:"package"`
-
-	// File is the file path pattern (use instead of Package, e.g., "internal/handler/*.go")
-	File string `yaml:"file"`
-
-	// Function is the function name pattern (e.g., "*", "Handle*")
-	Function string `yaml:"function"`
-
-	// Start is the code to insert at function start (defer pattern recommended)
-	Start string `yaml:"start"`
-
-	// End is the code to insert at function end (not executed on mid-return, use defer)
-	End string `yaml:"end"`
-
-	// Imports are import paths to add
-	Imports []string `yaml:"imports"`
-}
-
-// ReplaceRule is a rule for replacing function calls
-type ReplaceRule struct {
-	// Package is the original package path (e.g., "database/sql")
-	Package string `yaml:"package"`
-
-	// Function is the original function name (e.g., "Open")
-	Function string `yaml:"function"`
-
-	// With is the replacement package.function (e.g., "whatapsql.Open")
-	With string `yaml:"with"`
-
-	// Imports are import paths to add
-	Imports []string `yaml:"imports"`
-}
-
-// HookRule is a rule for inserting code before/after function calls
-// Can use Before or After alone
-type HookRule struct {
-	// Package is the target package path (e.g., "mycompany/mydb")
-	Package string `yaml:"package"`
-
-	// Function is the target function name (e.g., "Query")
-	Function string `yaml:"function"`
-
-	// Before is the code to insert before call (optional)
-	Before string `yaml:"before"`
-
-	// After is the code to insert after call (optional)
-	After string `yaml:"after"`
-
-	// Imports are import paths to add
-	Imports []string `yaml:"imports"`
-}
-
-// TransformRule is a rule for code pattern → template replacement (universal)
-type TransformRule struct {
-	// Package is the target package path (e.g., "github.com/gin-gonic/gin")
-	Package string `yaml:"package"`
-
-	// Function is the target function name (e.g., "Default")
-	Function string `yaml:"function"`
-
-	// Template is the inline template (uses {{.Original}}, {{.Var}}, {{.Args}}, etc.)
-	Template string `yaml:"template"`
-
-	// TemplateFile is the template file path
-	TemplateFile string `yaml:"template_file"`
-
-	// Imports are import paths to add
-	Imports []string `yaml:"imports"`
-
-	// Vars are user-defined template variables
-	Vars map[string]interface{} `yaml:"vars"`
+	// Append was removed in v0.5.5. Presence of `append:` in yaml triggers a
+	// migration error at load time. DO NOT use — this field exists only so
+	// the yaml decoder can catch deprecated rules and emit a clear message.
+	//
+	// Deprecated: migrate to a new-file add rule in the same package.
+	Append bool `yaml:"append,omitempty"`
 }
 
 // NewConfig creates a Config with default settings
@@ -268,7 +181,6 @@ func NewConfig() *Config {
 			Debug:         false,
 			OutputDir:     "",
 		},
-		Custom:  CustomConfig{},
 		Exclude: DefaultExcludePatterns,
 	}
 }
@@ -319,32 +231,20 @@ func (c *Config) Merge(other *Config) {
 	if other.Instrumentation.OutputDir != "" {
 		c.Instrumentation.OutputDir = other.Instrumentation.OutputDir
 	}
-	if other.Instrumentation.Preset != "" {
-		c.Instrumentation.Preset = other.Instrumentation.Preset
-	}
 	if len(other.Instrumentation.EnabledPackages) > 0 {
 		c.Instrumentation.EnabledPackages = append(c.Instrumentation.EnabledPackages, other.Instrumentation.EnabledPackages...)
 	}
 	if len(other.Instrumentation.DisabledPackages) > 0 {
 		c.Instrumentation.DisabledPackages = append(c.Instrumentation.DisabledPackages, other.Instrumentation.DisabledPackages...)
 	}
+	// §271 — SkipReplacedModules merge: only overwrite when the other source
+	// set it explicitly (pointer non-nil). Default (nil) leaves the current
+	// value untouched so layered configs (defaults → file → CLI) compose.
+	if other.Instrumentation.SkipReplacedModules != nil {
+		v := *other.Instrumentation.SkipReplacedModules
+		c.Instrumentation.SkipReplacedModules = &v
+	}
 
-	// Merge Custom (add)
-	if len(other.Custom.Add) > 0 {
-		c.Custom.Add = append(c.Custom.Add, other.Custom.Add...)
-	}
-	if len(other.Custom.Inject) > 0 {
-		c.Custom.Inject = append(c.Custom.Inject, other.Custom.Inject...)
-	}
-	if len(other.Custom.Replace) > 0 {
-		c.Custom.Replace = append(c.Custom.Replace, other.Custom.Replace...)
-	}
-	if len(other.Custom.Hook) > 0 {
-		c.Custom.Hook = append(c.Custom.Hook, other.Custom.Hook...)
-	}
-	if len(other.Custom.Transform) > 0 {
-		c.Custom.Transform = append(c.Custom.Transform, other.Custom.Transform...)
-	}
 
 	// Merge Exclude (add)
 	if len(other.Exclude) > 0 {
@@ -362,54 +262,30 @@ func (c *Config) Merge(other *Config) {
 			c.ExternalModules = append(c.ExternalModules, mod)
 		}
 	}
-}
 
-// GetEnabledPackages returns the list of enabled packages
-// Preset default packages + EnabledPackages - DisabledPackages
-func (c *Config) GetEnabledPackages() []string {
-	preset := c.Instrumentation.Preset
-	if preset == "" {
-		preset = PresetFull // default
+	// Merge new unified Rules schema (§227 Step 4). Behaviour is intentionally
+	// permissive: later sources append rules, override the version field, and
+	// extend imports / importAliases.
+	if other.Version != 0 {
+		c.Version = other.Version
 	}
-
-	// Get default package list
-	var packages []string
-	if preset == PresetCustom {
-		// custom preset: use EnabledPackages only
-		packages = make([]string, len(c.Instrumentation.EnabledPackages))
-		copy(packages, c.Instrumentation.EnabledPackages)
-	} else {
-		// Other presets: get from PresetPackages
-		base := PresetPackages[preset]
-		packages = make([]string, len(base))
-		copy(packages, base)
-
-		// Add EnabledPackages
-		for _, pkg := range c.Instrumentation.EnabledPackages {
-			if !contains(packages, pkg) {
-				packages = append(packages, pkg)
-			}
+	if len(other.Imports) > 0 {
+		c.Imports = append(c.Imports, other.Imports...)
+	}
+	if len(other.ImportAliases) > 0 {
+		if c.ImportAliases == nil {
+			c.ImportAliases = make(map[string]string, len(other.ImportAliases))
+		}
+		for k, v := range other.ImportAliases {
+			c.ImportAliases[k] = v
 		}
 	}
-
-	// Remove DisabledPackages
-	if len(c.Instrumentation.DisabledPackages) > 0 {
-		var filtered []string
-		for _, pkg := range packages {
-			if !contains(c.Instrumentation.DisabledPackages, pkg) {
-				filtered = append(filtered, pkg)
-			}
-		}
-		packages = filtered
+	if len(other.Rules) > 0 {
+		c.Rules = append(c.Rules, other.Rules...)
 	}
-
-	return packages
-}
-
-// IsPackageEnabled checks if a specific package is enabled
-func (c *Config) IsPackageEnabled(name string) bool {
-	enabled := c.GetEnabledPackages()
-	return contains(enabled, name)
+	if len(other.Add) > 0 {
+		c.Add = append(c.Add, other.Add...)
+	}
 }
 
 // HasExternalModules returns true if external module instrumentation is configured

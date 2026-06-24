@@ -1,0 +1,690 @@
+# whatap-go-inst v2 built-in rules (§227 Step 3).
+# Schema: dev-docs/design/v2/rule-yaml-schema.md
+#
+# This file is embedded into the binary via //go:embed (rules_loader.go).
+# At runtime the loader walks this list and builds the same Rules as
+# ast/rules.go AllRules() (currently 106 — see rules-catalog.md "요약" 표
+# for the authoritative count). A unit test (rules_loader_test.go) diffs
+# the two sources field-by-field to catch any drift.
+#
+# Global importAliases define the "common path" for each whatap package.
+# Rule-level importAliases override a single entry (used where the same
+# alias name resolves to different paths: gorm vs jinzhugorm, redis v9/v8,
+# sarama IBM/Shopify, echo v3/v4).
+
+version: 1
+
+importAliases:
+  whatapsql:       "github.com/whatap/go-api/instrumentation/database/sql/whatapsql"
+  whatapsqlx:      "github.com/whatap/go-api/instrumentation/github.com/jmoiron/sqlx/whatapsqlx"
+  whatapgorm:      "github.com/whatap/go-api/instrumentation/github.com/go-gorm/gorm/whatapgorm"
+  whatapgoredis:   "github.com/whatap/go-api/instrumentation/github.com/redis/go-redis/v9/whatapgoredis"
+  whatapredigo:    "github.com/whatap/go-api/instrumentation/github.com/gomodule/redigo/whatapredigo"
+  whatapmongo:     "github.com/whatap/go-api/instrumentation/go.mongodb.org/mongo-driver/mongo/whatapmongo"
+  whatapfmt:       "github.com/whatap/go-api/instrumentation/fmt/whatapfmt"
+  whatapgin:       "github.com/whatap/go-api/instrumentation/github.com/gin-gonic/gin/whatapgin"
+  whatapecho:      "github.com/whatap/go-api/instrumentation/github.com/labstack/echo/v4/whatapecho"
+  whatapfiber:     "github.com/whatap/go-api/instrumentation/github.com/gofiber/fiber/v2/whatapfiber"
+  whatapchi:       "github.com/whatap/go-api/instrumentation/github.com/go-chi/chi/whatapchi"
+  whatapmux:       "github.com/whatap/go-api/instrumentation/github.com/gorilla/mux/whatapmux"
+  whatapsarama:    "github.com/whatap/go-api/instrumentation/github.com/IBM/sarama/whatapsarama"
+  whataplogrus:    "github.com/whatap/go-api/instrumentation/github.com/sirupsen/logrus/whataplogrus"
+  whatapgrpc:      "github.com/whatap/go-api/instrumentation/google.golang.org/grpc/whatapgrpc"
+  whatapkubernetes: "github.com/whatap/go-api/instrumentation/k8s.io/client-go/kubernetes/whatapkubernetes"
+  whataplogsink:   "github.com/whatap/go-api/logsink"
+  whataphttp:      "github.com/whatap/go-api/instrumentation/net/http/whataphttp"
+  whatapfasthttp:  "github.com/whatap/go-api/instrumentation/github.com/valyala/fasthttp/whatapfasthttp"
+  whatapdb:        "github.com/whatap/go-api/sql"
+  whatapas:        "github.com/whatap/go-api/instrumentation/github.com/aerospike/aerospike-client-go/v6/whatapas"
+  whatapopenai:    "github.com/whatap/go-api/instrumentation/llm/github.com/sashabaranov/go-openai/whatapopenai"
+  whatapeino:      "github.com/whatap/go-api/instrumentation/llm/github.com/cloudwego/eino/whatapeino"
+  whatapanthropic: "github.com/whatap/go-api/instrumentation/llm/github.com/anthropics/anthropic-sdk-go/whatapanthropic"
+  whatapopenaigo:  "github.com/whatap/go-api/instrumentation/llm/github.com/openai/openai-go/whatapopenaigo"
+
+rules:
+  # ── ReplaceFunction (25) ────────────────────────────────────────
+
+  # sql (1)
+  - {type: replace, target: "database/sql.Open",                      with: "whatapsql.Open"}
+
+  # sqlx (5)
+  - {type: replace, target: "github.com/jmoiron/sqlx.Open",           with: "whatapsqlx.Open"}
+  - {type: replace, target: "github.com/jmoiron/sqlx.Connect",        with: "whatapsqlx.Connect"}
+  - {type: replace, target: "github.com/jmoiron/sqlx.ConnectContext", with: "whatapsqlx.ConnectContext"}
+  - {type: replace, target: "github.com/jmoiron/sqlx.MustConnect",    with: "whatapsqlx.MustConnect"}
+  - {type: replace, target: "github.com/jmoiron/sqlx.MustOpen",       with: "whatapsqlx.MustOpen"}
+
+  # gorm (1)
+  - {type: replace, target: "gorm.io/gorm.Open", with: "whatapgorm.Open"}
+
+  # jinzhugorm (1) — same alias as gorm, different path → rule-level override
+  - type: replace
+    target: "github.com/jinzhu/gorm.Open"
+    with: "whatapgorm.Open"
+    importAliases:
+      whatapgorm: "github.com/whatap/go-api/instrumentation/github.com/jinzhu/gorm/whatapgorm"
+
+  # goredis v9 (4) — global alias points here
+  - {type: replace, target: "github.com/redis/go-redis/v9.NewClient",         with: "whatapgoredis.NewClient"}
+  - {type: replace, target: "github.com/redis/go-redis/v9.NewClusterClient",  with: "whatapgoredis.NewClusterClient"}
+  - {type: replace, target: "github.com/redis/go-redis/v9.NewFailoverClient", with: "whatapgoredis.NewFailoverClient"}
+  - {type: replace, target: "github.com/redis/go-redis/v9.NewRing",           with: "whatapgoredis.NewRing"}
+
+  # goredis v8 (4) — rule-level override
+  - type: replace
+    target: "github.com/go-redis/redis/v8.NewClient"
+    with: "whatapgoredis.NewClient"
+    importAliases:
+      whatapgoredis: "github.com/whatap/go-api/instrumentation/github.com/go-redis/redis/v8/whatapgoredis"
+  - type: replace
+    target: "github.com/go-redis/redis/v8.NewClusterClient"
+    with: "whatapgoredis.NewClusterClient"
+    importAliases:
+      whatapgoredis: "github.com/whatap/go-api/instrumentation/github.com/go-redis/redis/v8/whatapgoredis"
+  - type: replace
+    target: "github.com/go-redis/redis/v8.NewFailoverClient"
+    with: "whatapgoredis.NewFailoverClient"
+    importAliases:
+      whatapgoredis: "github.com/whatap/go-api/instrumentation/github.com/go-redis/redis/v8/whatapgoredis"
+  - type: replace
+    target: "github.com/go-redis/redis/v8.NewRing"
+    with: "whatapgoredis.NewRing"
+    importAliases:
+      whatapgoredis: "github.com/whatap/go-api/instrumentation/github.com/go-redis/redis/v8/whatapgoredis"
+
+  # redigo (4)
+  - {type: replace, target: "github.com/gomodule/redigo/redis.Dial",           with: "whatapredigo.Dial"}
+  - {type: replace, target: "github.com/gomodule/redigo/redis.DialContext",    with: "whatapredigo.DialContext"}
+  - {type: replace, target: "github.com/gomodule/redigo/redis.DialURL",        with: "whatapredigo.DialURL"}
+  - {type: replace, target: "github.com/gomodule/redigo/redis.DialURLContext", with: "whatapredigo.DialURLContext"}
+
+  # mongo (2)
+  - {type: replace, target: "go.mongodb.org/mongo-driver/mongo.Connect",   with: "whatapmongo.Connect"}
+  - {type: replace, target: "go.mongodb.org/mongo-driver/mongo.NewClient", with: "whatapmongo.NewClient"}
+
+  # fmt (3)
+  - {type: replace, optin: true, target: "fmt.Print",   with: "whatapfmt.Print"}
+  - {type: replace, optin: true, target: "fmt.Printf",  with: "whatapfmt.Printf"}
+  - {type: replace, optin: true, target: "fmt.Println", with: "whatapfmt.Println"}
+
+  # ── WrapCall (12) ───────────────────────────────────────────────
+
+  # gin (2)
+  - {type: wrap-call, target: "github.com/gin-gonic/gin.Default", with: "whatapgin.WrapEngine"}
+  - {type: wrap-call, target: "github.com/gin-gonic/gin.New",     with: "whatapgin.WrapEngine"}
+
+  # echo v4 (1) — global alias points here
+  - {type: wrap-call, target: "github.com/labstack/echo/v4.New", with: "whatapecho.WrapEcho"}
+
+  # echo v3 (1) — rule-level override
+  - type: wrap-call
+    target: "github.com/labstack/echo.New"
+    with: "whatapecho.WrapEcho"
+    importAliases:
+      whatapecho: "github.com/whatap/go-api/instrumentation/github.com/labstack/echo/whatapecho"
+
+  # fiber (1)
+  - {type: wrap-call, target: "github.com/gofiber/fiber/v2.New", with: "whatapfiber.WrapApp"}
+
+  # chi v4 and v5 (2) — share the same whatap package
+  - {type: wrap-call, target: "github.com/go-chi/chi.NewRouter",    with: "whatapchi.WrapRouter"}
+  - {type: wrap-call, target: "github.com/go-chi/chi/v5.NewRouter", with: "whatapchi.WrapRouter"}
+
+  # gorilla (2)
+  - {type: wrap-call, target: "github.com/gorilla/mux.NewRouter",      with: "whatapmux.WrapRouter"}
+  - {type: wrap-call, target: "github.com/gorilla/mux.Route.Subrouter", with: "whatapmux.WrapRouter"}
+
+  # sarama IBM (1) — global alias
+  - {type: wrap-call, target: "github.com/IBM/sarama.NewConfig", with: "whatapsarama.WrapConfig"}
+
+  # sarama Shopify (1) — rule-level override
+  - type: wrap-call
+    target: "github.com/Shopify/sarama.NewConfig"
+    with: "whatapsarama.WrapConfig"
+    importAliases:
+      whatapsarama: "github.com/whatap/go-api/instrumentation/github.com/Shopify/sarama/whatapsarama"
+
+  # logrus (1)
+  - {type: wrap-call, target: "github.com/sirupsen/logrus.New", with: "whataplogrus.WrapLogger"}
+
+  # ── Phase 2: ArgInsert + CodeInsert + MainInsert + ArgWrap ─────
+
+  # grpc — ArgInsert (4)
+  - type: arg-insert
+    target: "google.golang.org/grpc.NewServer"
+    whatapAlias: whatapgrpc
+    insertArgs:
+      # §294: Chain* variants coexist with a user's existing interceptor (additive)
+      # instead of panicking ("interceptor was already set"). Plain options are single-slot.
+      - {wrapFunc: ChainUnaryInterceptor,  innerFunc: UnaryServerInterceptor}
+      - {wrapFunc: ChainStreamInterceptor, innerFunc: StreamServerInterceptor}
+    ellipsis: true
+    signature: {minArgs: 0}
+
+  - type: arg-insert
+    target: "google.golang.org/grpc.Dial"
+    whatapAlias: whatapgrpc
+    insertArgs:
+      - {wrapFunc: WithChainUnaryInterceptor,  innerFunc: UnaryClientInterceptor}
+      - {wrapFunc: WithChainStreamInterceptor, innerFunc: StreamClientInterceptor}
+    ellipsis: true
+    signature: {minArgs: 1}
+
+  - type: arg-insert
+    target: "google.golang.org/grpc.DialContext"
+    whatapAlias: whatapgrpc
+    insertArgs:
+      - {wrapFunc: WithChainUnaryInterceptor,  innerFunc: UnaryClientInterceptor}
+      - {wrapFunc: WithChainStreamInterceptor, innerFunc: StreamClientInterceptor}
+    ellipsis: true
+    signature: {minArgs: 2}
+
+  - type: arg-insert
+    target: "google.golang.org/grpc.NewClient"
+    whatapAlias: whatapgrpc
+    insertArgs:
+      - {wrapFunc: WithChainUnaryInterceptor,  innerFunc: UnaryClientInterceptor}
+      - {wrapFunc: WithChainStreamInterceptor, innerFunc: StreamClientInterceptor}
+    ellipsis: true
+    signature: {minArgs: 1}
+
+  # k8s — CodeInsert (2)
+  - type: code-insert
+    target: "k8s.io/client-go/kubernetes.NewForConfig"
+    with: "whatapkubernetes.WrapRoundTripper"
+    position: before
+    argSource: 0
+    methodName: Wrap
+    signature: {minArgs: 1, maxArgs: 1}
+
+  - type: code-insert
+    target: "k8s.io/client-go/kubernetes.NewForConfigOrDie"
+    with: "whatapkubernetes.WrapRoundTripper"
+    position: before
+    argSource: 0
+    methodName: Wrap
+    signature: {minArgs: 1, maxArgs: 1}
+
+  # log — ArgWrap (1) + MainInsert (1)
+  - type: arg-wrap
+    target: "log.New"
+    with: "whataplogsink.GetTraceLogWriter"
+    argIndex: 0
+    signature: {minArgs: 3, maxArgs: 3}
+
+  - type: main-insert
+    target: "log.SetOutput"
+    with: "whataplogsink.GetTraceLogWriter"
+    extraImport: "os"
+    wrapExpr: "os.Stderr"
+    origPkg: "log"
+
+  # ── Phase 3b: nethttp ReplaceWithCtx (6) ──────────────────────
+
+  # package-level client functions
+  - type: replace-with-ctx
+    target: "net/http.Get"
+    with: "whataphttp.HttpGet"
+    signature: {minArgs: 1, maxArgs: 1}
+  - type: replace-with-ctx
+    target: "net/http.Post"
+    with: "whataphttp.HttpPost"
+    signature: {minArgs: 3, maxArgs: 3}
+  - type: replace-with-ctx
+    target: "net/http.PostForm"
+    with: "whataphttp.HttpPostForm"
+    signature: {minArgs: 2, maxArgs: 2}
+
+  # DefaultClient methods
+  - type: replace-with-ctx
+    target: "net/http.DefaultClient.Get"
+    with: "whataphttp.DefaultClientGet"
+    signature: {minArgs: 1, maxArgs: 1}
+  - type: replace-with-ctx
+    target: "net/http.DefaultClient.Post"
+    with: "whataphttp.DefaultClientPost"
+    signature: {minArgs: 3, maxArgs: 3}
+  - type: replace-with-ctx
+    target: "net/http.DefaultClient.PostForm"
+    with: "whataphttp.DefaultClientPostForm"
+    signature: {minArgs: 2, maxArgs: 2}
+
+  # ── Phase 3a: nethttp ArgWrap + FieldWrap + FieldWrapOrInsert ─
+
+  # nethttp — ArgWrap (4): handler wrapping
+  - type: arg-wrap
+    target: "net/http.HandleFunc"
+    with: "whataphttp.Func"
+    argIndex: -1
+    signature: {minArgs: 2, maxArgs: 2}
+  - type: arg-wrap
+    target: "net/http.Handle"
+    with: "whataphttp.WrapHandler"
+    argIndex: -1
+    signature: {minArgs: 2, maxArgs: 2}
+  - type: arg-wrap
+    target: "net/http.ServeMux.HandleFunc"
+    with: "whataphttp.Func"
+    argIndex: -1
+    signature: {minArgs: 2, maxArgs: 2}
+  - type: arg-wrap
+    target: "net/http.ServeMux.Handle"
+    with: "whataphttp.WrapHandler"
+    argIndex: -1
+    signature: {minArgs: 2, maxArgs: 2}
+
+  # nethttp — FieldWrap (1): Server{Handler}
+  - type: field-wrap
+    target: "lit:net/http.Server{}"
+    with: "whataphttp.WrapHandler"
+    fieldName: Handler
+    fields:
+      - {name: Handler, required: true}
+
+  # nethttp — FieldWrapOrInsert (1): Client{Transport}
+  - type: field-wrap-or-insert
+    target: "lit:net/http.Client{}"
+    wrapWith:   "whataphttp.NewRoundTrip"
+    insertWith: "whataphttp.NewRoundTripWithEmptyTransport"
+    fieldName: Transport
+    ctxAware: true
+
+  # ── Phase 3a: fasthttp ArgWrap + FieldWrap ────────────────────
+
+  # fasthttp — ArgWrap (8): router method handler wrapping
+  - {type: arg-wrap, target: "github.com/fasthttp/router.Router.GET",     with: "whatapfasthttp.Func", argIndex: -1, signature: {minArgs: 2, maxArgs: 2}}
+  - {type: arg-wrap, target: "github.com/fasthttp/router.Router.POST",    with: "whatapfasthttp.Func", argIndex: -1, signature: {minArgs: 2, maxArgs: 2}}
+  - {type: arg-wrap, target: "github.com/fasthttp/router.Router.PUT",     with: "whatapfasthttp.Func", argIndex: -1, signature: {minArgs: 2, maxArgs: 2}}
+  - {type: arg-wrap, target: "github.com/fasthttp/router.Router.DELETE",  with: "whatapfasthttp.Func", argIndex: -1, signature: {minArgs: 2, maxArgs: 2}}
+  - {type: arg-wrap, target: "github.com/fasthttp/router.Router.PATCH",   with: "whatapfasthttp.Func", argIndex: -1, signature: {minArgs: 2, maxArgs: 2}}
+  - {type: arg-wrap, target: "github.com/fasthttp/router.Router.HEAD",    with: "whatapfasthttp.Func", argIndex: -1, signature: {minArgs: 2, maxArgs: 2}}
+  - {type: arg-wrap, target: "github.com/fasthttp/router.Router.OPTIONS", with: "whatapfasthttp.Func", argIndex: -1, signature: {minArgs: 2, maxArgs: 2}}
+  - {type: arg-wrap, target: "github.com/fasthttp/router.Router.ANY",     with: "whatapfasthttp.Func", argIndex: -1, signature: {minArgs: 2, maxArgs: 2}}
+
+  # fasthttp — FieldWrap (1): Server{Handler}
+  - type: field-wrap
+    target: "lit:github.com/valyala/fasthttp.Server{}"
+    with: "whatapfasthttp.WrapHandler"
+    fieldName: Handler
+    fields:
+      - {name: Handler, required: true}
+
+  # ── Phase 3c: Transform — aerospike (26) ──────────────────────
+
+  # aerospike — WrapOpen (3)
+  - type: transform
+    target: "github.com/aerospike/aerospike-client-go/v6.NewClient"
+    template: 'whatapdb.WrapOpen({{.Ctx}}, fmt.Sprintf("aerospike://%v:%v", {{.Arg0}}, {{.Arg1}}), func() (*{{.TargetPkg}}.Client, error) { return {{.Original}} })'
+    imports:
+      - "github.com/whatap/go-api/sql"
+      - "context"
+      - "fmt"
+
+  - type: transform
+    target: "github.com/aerospike/aerospike-client-go/v6.NewClientWithPolicy"
+    template: 'whatapdb.WrapOpen({{.Ctx}}, fmt.Sprintf("aerospike://%v:%v", {{.Arg1}}, {{.Arg2}}), func() (*{{.TargetPkg}}.Client, error) { return {{.Original}} })'
+    imports:
+      - "github.com/whatap/go-api/sql"
+      - "context"
+      - "fmt"
+
+  # §236 — variadic *Host. {{.Args1Plus}} preserves the original call's
+  # spread/individual form so the substituted call still compiles.
+  - type: transform
+    target: "github.com/aerospike/aerospike-client-go/v6.NewClientWithPolicyAndHost"
+    template: 'whatapdb.WrapOpen({{.Ctx}}, whatapas.DbhostFromHosts({{.Args1Plus}}), func() (*{{.TargetPkg}}.Client, error) { return {{.Original}} })'
+    imports:
+      - "github.com/whatap/go-api/sql"
+      - "github.com/whatap/go-api/instrumentation/github.com/aerospike/aerospike-client-go/v6/whatapas"
+      - "context"
+
+  # aerospike — WrapPut (1)
+  - type: transform
+    target: "github.com/aerospike/aerospike-client-go/v6.Client.Put"
+    template: 'whatapas.WrapPut({{.Ctx}}, {{.Receiver}}, {{.Arg1}}, {{.Arg2}}, func() error { return {{.Original}} })'
+    imports:
+      - "github.com/whatap/go-api/instrumentation/github.com/aerospike/aerospike-client-go/v6/whatapas"
+      - "context"
+
+  # aerospike — WrapPutBins (1)
+  - type: transform
+    target: "github.com/aerospike/aerospike-client-go/v6.Client.PutBins"
+    template: 'whatapas.WrapPutBins({{.Ctx}}, {{.Receiver}}, {{.Arg1}}, func() error { return {{.Original}} })'
+    imports:
+      - "github.com/whatap/go-api/instrumentation/github.com/aerospike/aerospike-client-go/v6/whatapas"
+      - "context"
+
+  # aerospike — WrapGet (1)
+  - type: transform
+    target: "github.com/aerospike/aerospike-client-go/v6.Client.Get"
+    template: 'whatapas.WrapGet({{.Ctx}}, {{.Receiver}}, {{.Arg1}}, nil, func() (*{{.TargetPkg}}.Record, error) { return {{.Original}} })'
+    imports:
+      - "github.com/whatap/go-api/instrumentation/github.com/aerospike/aerospike-client-go/v6/whatapas"
+      - "context"
+
+  # aerospike — WrapDelete (1)
+  - type: transform
+    target: "github.com/aerospike/aerospike-client-go/v6.Client.Delete"
+    template: 'whatapas.WrapDelete({{.Ctx}}, {{.Receiver}}, {{.Arg1}}, func() (bool, error) { return {{.Original}} })'
+    imports:
+      - "github.com/whatap/go-api/instrumentation/github.com/aerospike/aerospike-client-go/v6/whatapas"
+      - "context"
+
+  # aerospike — WrapExists (1)
+  - type: transform
+    target: "github.com/aerospike/aerospike-client-go/v6.Client.Exists"
+    template: 'whatapas.WrapExists({{.Ctx}}, {{.Receiver}}, {{.Arg1}}, func() (bool, error) { return {{.Original}} })'
+    imports:
+      - "github.com/whatap/go-api/instrumentation/github.com/aerospike/aerospike-client-go/v6/whatapas"
+      - "context"
+
+  # aerospike — WrapError (7): error-only methods
+  - type: transform
+    target: "github.com/aerospike/aerospike-client-go/v6.Client.Append"
+    template: 'whatapdb.WrapError({{.Ctx}}, whatapas.GetDbhost({{.Receiver}}), "{{.FuncName}}", func() error { return {{.Original}} })'
+    imports:
+      - "github.com/whatap/go-api/sql"
+      - "github.com/whatap/go-api/instrumentation/github.com/aerospike/aerospike-client-go/v6/whatapas"
+      - "context"
+  - type: transform
+    target: "github.com/aerospike/aerospike-client-go/v6.Client.Prepend"
+    template: 'whatapdb.WrapError({{.Ctx}}, whatapas.GetDbhost({{.Receiver}}), "{{.FuncName}}", func() error { return {{.Original}} })'
+    imports:
+      - "github.com/whatap/go-api/sql"
+      - "github.com/whatap/go-api/instrumentation/github.com/aerospike/aerospike-client-go/v6/whatapas"
+      - "context"
+  - type: transform
+    target: "github.com/aerospike/aerospike-client-go/v6.Client.Add"
+    template: 'whatapdb.WrapError({{.Ctx}}, whatapas.GetDbhost({{.Receiver}}), "{{.FuncName}}", func() error { return {{.Original}} })'
+    imports:
+      - "github.com/whatap/go-api/sql"
+      - "github.com/whatap/go-api/instrumentation/github.com/aerospike/aerospike-client-go/v6/whatapas"
+      - "context"
+  - type: transform
+    target: "github.com/aerospike/aerospike-client-go/v6.Client.Touch"
+    template: 'whatapdb.WrapError({{.Ctx}}, whatapas.GetDbhost({{.Receiver}}), "{{.FuncName}}", func() error { return {{.Original}} })'
+    imports:
+      - "github.com/whatap/go-api/sql"
+      - "github.com/whatap/go-api/instrumentation/github.com/aerospike/aerospike-client-go/v6/whatapas"
+      - "context"
+  - type: transform
+    target: "github.com/aerospike/aerospike-client-go/v6.Client.Truncate"
+    template: 'whatapdb.WrapError({{.Ctx}}, whatapas.GetDbhost({{.Receiver}}), "{{.FuncName}}", func() error { return {{.Original}} })'
+    imports:
+      - "github.com/whatap/go-api/sql"
+      - "github.com/whatap/go-api/instrumentation/github.com/aerospike/aerospike-client-go/v6/whatapas"
+      - "context"
+  - type: transform
+    target: "github.com/aerospike/aerospike-client-go/v6.Client.CreateIndex"
+    template: 'whatapdb.WrapError({{.Ctx}}, whatapas.GetDbhost({{.Receiver}}), "{{.FuncName}}", func() error { return {{.Original}} })'
+    imports:
+      - "github.com/whatap/go-api/sql"
+      - "github.com/whatap/go-api/instrumentation/github.com/aerospike/aerospike-client-go/v6/whatapas"
+      - "context"
+  - type: transform
+    target: "github.com/aerospike/aerospike-client-go/v6.Client.DropIndex"
+    template: 'whatapdb.WrapError({{.Ctx}}, whatapas.GetDbhost({{.Receiver}}), "{{.FuncName}}", func() error { return {{.Original}} })'
+    imports:
+      - "github.com/whatap/go-api/sql"
+      - "github.com/whatap/go-api/instrumentation/github.com/aerospike/aerospike-client-go/v6/whatapas"
+      - "context"
+
+  # aerospike — Wrap (11): (T, error) methods — hardcoded return types
+  - type: transform
+    target: "github.com/aerospike/aerospike-client-go/v6.Client.GetHeader"
+    template: 'whatapdb.Wrap({{.Ctx}}, whatapas.GetDbhost({{.Receiver}}), "{{.FuncName}}", func() (*{{.TargetPkg}}.Record, error) { return {{.Original}} })'
+    imports:
+      - "github.com/whatap/go-api/sql"
+      - "github.com/whatap/go-api/instrumentation/github.com/aerospike/aerospike-client-go/v6/whatapas"
+      - "context"
+  - type: transform
+    target: "github.com/aerospike/aerospike-client-go/v6.Client.BatchGet"
+    template: 'whatapdb.Wrap({{.Ctx}}, whatapas.GetDbhost({{.Receiver}}), "{{.FuncName}}", func() ([]*{{.TargetPkg}}.Record, error) { return {{.Original}} })'
+    imports:
+      - "github.com/whatap/go-api/sql"
+      - "github.com/whatap/go-api/instrumentation/github.com/aerospike/aerospike-client-go/v6/whatapas"
+      - "context"
+  - type: transform
+    target: "github.com/aerospike/aerospike-client-go/v6.Client.BatchGetHeader"
+    template: 'whatapdb.Wrap({{.Ctx}}, whatapas.GetDbhost({{.Receiver}}), "{{.FuncName}}", func() ([]*{{.TargetPkg}}.Record, error) { return {{.Original}} })'
+    imports:
+      - "github.com/whatap/go-api/sql"
+      - "github.com/whatap/go-api/instrumentation/github.com/aerospike/aerospike-client-go/v6/whatapas"
+      - "context"
+  - type: transform
+    target: "github.com/aerospike/aerospike-client-go/v6.Client.BatchExists"
+    template: 'whatapdb.Wrap({{.Ctx}}, whatapas.GetDbhost({{.Receiver}}), "{{.FuncName}}", func() ([]bool, error) { return {{.Original}} })'
+    imports:
+      - "github.com/whatap/go-api/sql"
+      - "github.com/whatap/go-api/instrumentation/github.com/aerospike/aerospike-client-go/v6/whatapas"
+      - "context"
+  - type: transform
+    target: "github.com/aerospike/aerospike-client-go/v6.Client.BatchDelete"
+    template: 'whatapdb.Wrap({{.Ctx}}, whatapas.GetDbhost({{.Receiver}}), "{{.FuncName}}", func() ([]*{{.TargetPkg}}.BatchRecord, error) { return {{.Original}} })'
+    imports:
+      - "github.com/whatap/go-api/sql"
+      - "github.com/whatap/go-api/instrumentation/github.com/aerospike/aerospike-client-go/v6/whatapas"
+      - "context"
+  - type: transform
+    target: "github.com/aerospike/aerospike-client-go/v6.Client.Query"
+    template: 'whatapdb.Wrap({{.Ctx}}, whatapas.GetDbhost({{.Receiver}}), "{{.FuncName}}", func() (*{{.TargetPkg}}.Recordset, error) { return {{.Original}} })'
+    imports:
+      - "github.com/whatap/go-api/sql"
+      - "github.com/whatap/go-api/instrumentation/github.com/aerospike/aerospike-client-go/v6/whatapas"
+      - "context"
+  - type: transform
+    target: "github.com/aerospike/aerospike-client-go/v6.Client.ScanAll"
+    template: 'whatapdb.Wrap({{.Ctx}}, whatapas.GetDbhost({{.Receiver}}), "{{.FuncName}}", func() (*{{.TargetPkg}}.Recordset, error) { return {{.Original}} })'
+    imports:
+      - "github.com/whatap/go-api/sql"
+      - "github.com/whatap/go-api/instrumentation/github.com/aerospike/aerospike-client-go/v6/whatapas"
+      - "context"
+  - type: transform
+    target: "github.com/aerospike/aerospike-client-go/v6.Client.ScanNode"
+    template: 'whatapdb.Wrap({{.Ctx}}, whatapas.GetDbhost({{.Receiver}}), "{{.FuncName}}", func() (*{{.TargetPkg}}.Recordset, error) { return {{.Original}} })'
+    imports:
+      - "github.com/whatap/go-api/sql"
+      - "github.com/whatap/go-api/instrumentation/github.com/aerospike/aerospike-client-go/v6/whatapas"
+      - "context"
+  - type: transform
+    target: "github.com/aerospike/aerospike-client-go/v6.Client.Operate"
+    template: 'whatapdb.Wrap({{.Ctx}}, whatapas.GetDbhost({{.Receiver}}), "{{.FuncName}}", func() (*{{.TargetPkg}}.Record, error) { return {{.Original}} })'
+    imports:
+      - "github.com/whatap/go-api/sql"
+      - "github.com/whatap/go-api/instrumentation/github.com/aerospike/aerospike-client-go/v6/whatapas"
+      - "context"
+  - type: transform
+    target: "github.com/aerospike/aerospike-client-go/v6.Client.Execute"
+    template: 'whatapdb.Wrap({{.Ctx}}, whatapas.GetDbhost({{.Receiver}}), "{{.FuncName}}", func() (interface{}, error) { return {{.Original}} })'
+    imports:
+      - "github.com/whatap/go-api/sql"
+      - "github.com/whatap/go-api/instrumentation/github.com/aerospike/aerospike-client-go/v6/whatapas"
+      - "context"
+  - type: transform
+    target: "github.com/aerospike/aerospike-client-go/v6.Client.QueryAggregate"
+    template: 'whatapdb.Wrap({{.Ctx}}, whatapas.GetDbhost({{.Receiver}}), "{{.FuncName}}", func() (*{{.TargetPkg}}.Recordset, error) { return {{.Original}} })'
+    imports:
+      - "github.com/whatap/go-api/sql"
+      - "github.com/whatap/go-api/instrumentation/github.com/aerospike/aerospike-client-go/v6/whatapas"
+      - "context"
+
+  # §254 — sashabaranov/go-openai 메서드 wrap (Transform): user code's
+  # `c.CreateChatCompletion(ctx, req)` → wrap helper call so the
+  # *openai.Client variable type stays unchanged. The helpers route
+  # through the same code path as manual WrapClient(c).Method.
+  - type: transform
+    target: "github.com/sashabaranov/go-openai.Client.CreateChatCompletion"
+    template: 'whatapopenai.WrapAndCreateChatCompletion({{.Arg0}}, {{.Receiver}}, {{.Arg1}})'
+    imports:
+      - "github.com/whatap/go-api/instrumentation/llm/github.com/sashabaranov/go-openai/whatapopenai"
+  - type: transform
+    target: "github.com/sashabaranov/go-openai.Client.CreateChatCompletionStream"
+    template: 'whatapopenai.WrapAndCreateChatCompletionStream({{.Arg0}}, {{.Receiver}}, {{.Arg1}})'
+    imports:
+      - "github.com/whatap/go-api/instrumentation/llm/github.com/sashabaranov/go-openai/whatapopenai"
+  - type: transform
+    target: "github.com/sashabaranov/go-openai.Client.CreateCompletion"
+    template: 'whatapopenai.WrapAndCreateCompletion({{.Arg0}}, {{.Receiver}}, {{.Arg1}})'
+    imports:
+      - "github.com/whatap/go-api/instrumentation/llm/github.com/sashabaranov/go-openai/whatapopenai"
+  - type: transform
+    target: "github.com/sashabaranov/go-openai.Client.CreateEmbeddings"
+    template: 'whatapopenai.WrapAndCreateEmbeddings({{.Arg0}}, {{.Receiver}}, {{.Arg1}})'
+    imports:
+      - "github.com/whatap/go-api/instrumentation/llm/github.com/sashabaranov/go-openai/whatapopenai"
+
+  # §254 — sashabaranov/go-openai constructor wrap: user code's
+  # `openai.NewClient(key)` / `openai.NewClientWithConfig(cfg)` becomes
+  # a whatapopenai helper that installs a wrapped RoundTripper on
+  # cfg.HTTPClient.
+  - type: transform
+    target: "github.com/sashabaranov/go-openai.NewClient"
+    template: 'whatapopenai.NewClient({{.Arg0}})'
+    imports:
+      - "github.com/whatap/go-api/instrumentation/llm/github.com/sashabaranov/go-openai/whatapopenai"
+  - type: transform
+    target: "github.com/sashabaranov/go-openai.NewClientWithConfig"
+    template: 'whatapopenai.NewClientFromConfig({{.Arg0}})'
+    imports:
+      - "github.com/whatap/go-api/instrumentation/llm/github.com/sashabaranov/go-openai/whatapopenai"
+
+  # §254 — cloudwego/eino-ext openai/claude constructor wrap: user's
+  # `einoopenai.NewChatModel(ctx, cfg)` becomes a whatapeino helper that
+  # copies cfg and installs a wrapped RoundTripper on cfg.HTTPClient.
+  # WrapChatModel for response-metadata extraction stays user-explicit.
+  - type: transform
+    target: "github.com/cloudwego/eino-ext/components/model/openai.NewChatModel"
+    template: 'whatapeino.NewOpenAIChatModel({{.Arg0}}, {{.Arg1}})'
+    imports:
+      - "github.com/whatap/go-api/instrumentation/llm/github.com/cloudwego/eino/whatapeino"
+  - type: transform
+    target: "github.com/cloudwego/eino-ext/components/model/claude.NewChatModel"
+    template: 'whatapeino.NewClaudeChatModel({{.Arg0}}, {{.Arg1}})'
+    imports:
+      - "github.com/whatap/go-api/instrumentation/llm/github.com/cloudwego/eino/whatapeino"
+
+  # §282 작업1 — cloudwego/eino compose call-site wrap: the model argument
+  # passed into a compose builder is wrapped (WrapBaseChatModel) so the graph
+  # runtime invokes the WhaTap decorator and extracts response metadata. All
+  # five methods take model.BaseChatModel, so the helper accepts/returns
+  # BaseChatModel — the argument's static type is unchanged (no compile error).
+  # AppendChatModel(node, opts...) → argIndex 0; the rest take (key, node,
+  # opts...) → argIndex 1. opts is variadic (maxArgs -1).
+  - type: arg-wrap
+    target: "github.com/cloudwego/eino/compose.Chain.AppendChatModel"
+    with: "whatapeino.WrapBaseChatModel"
+    argIndex: 0
+    signature: {minArgs: 1, maxArgs: -1}
+  - type: arg-wrap
+    target: "github.com/cloudwego/eino/compose.Graph.AddChatModelNode"
+    with: "whatapeino.WrapBaseChatModel"
+    argIndex: 1
+    signature: {minArgs: 2, maxArgs: -1}
+  - type: arg-wrap
+    target: "github.com/cloudwego/eino/compose.Workflow.AddChatModelNode"
+    with: "whatapeino.WrapBaseChatModel"
+    argIndex: 1
+    signature: {minArgs: 2, maxArgs: -1}
+  - type: arg-wrap
+    target: "github.com/cloudwego/eino/compose.ChainBranch.AddChatModel"
+    with: "whatapeino.WrapBaseChatModel"
+    argIndex: 1
+    signature: {minArgs: 2, maxArgs: -1}
+  - type: arg-wrap
+    target: "github.com/cloudwego/eino/compose.Parallel.AddChatModel"
+    with: "whatapeino.WrapBaseChatModel"
+    argIndex: 1
+    signature: {minArgs: 2, maxArgs: -1}
+
+  # §282 작업2 — cloudwego/eino-ext direct call wrap: a direct cm.Generate /
+  # cm.Stream on the concrete *einoopenai.ChatModel / *einoclaude.ChatModel
+  # (type returned by the §254 constructor replacement) is rewritten to the
+  # call-site helper whatapeino.WrapGenerate/WrapStream so the WhaTap LLM step
+  # (response metadata) is emitted. cm keeps its concrete type (no user type
+  # change). MaxArgs 2: only canonical (ctx, input) form; opts → left unchanged.
+  - type: transform
+    target: "github.com/cloudwego/eino-ext/components/model/openai.ChatModel.Generate"
+    template: 'whatapeino.WrapGenerate({{.Receiver}}, {{.Arg0}}, {{.Arg1}})'
+    imports:
+      - "github.com/whatap/go-api/instrumentation/llm/github.com/cloudwego/eino/whatapeino"
+    signature: {minArgs: 2, maxArgs: 2}
+  - type: transform
+    target: "github.com/cloudwego/eino-ext/components/model/openai.ChatModel.Stream"
+    template: 'whatapeino.WrapStream({{.Receiver}}, {{.Arg0}}, {{.Arg1}})'
+    imports:
+      - "github.com/whatap/go-api/instrumentation/llm/github.com/cloudwego/eino/whatapeino"
+    signature: {minArgs: 2, maxArgs: 2}
+  - type: transform
+    target: "github.com/cloudwego/eino-ext/components/model/claude.ChatModel.Generate"
+    template: 'whatapeino.WrapGenerate({{.Receiver}}, {{.Arg0}}, {{.Arg1}})'
+    imports:
+      - "github.com/whatap/go-api/instrumentation/llm/github.com/cloudwego/eino/whatapeino"
+    signature: {minArgs: 2, maxArgs: 2}
+  - type: transform
+    target: "github.com/cloudwego/eino-ext/components/model/claude.ChatModel.Stream"
+    template: 'whatapeino.WrapStream({{.Receiver}}, {{.Arg0}}, {{.Arg1}})'
+    imports:
+      - "github.com/whatap/go-api/instrumentation/llm/github.com/cloudwego/eino/whatapeino"
+    signature: {minArgs: 2, maxArgs: 2}
+
+  # §253 — anthropics/anthropic-sdk-go MessageService wrap: user code's
+  # `client.Messages.New(ctx, params)` →
+  # `whatapanthropic.WrapAndNewMessage(ctx, client.Messages, params)`.
+  # Receiver = `client.Messages` (MessageService value) is forwarded
+  # directly — the wrap helper takes a MessageService so the 2-step
+  # selector pattern maps to a free function without any Client wrapper
+  # struct. Signature{maxArgs:2} drops the trailing opts case (manual
+  # wrap covers it).
+  - type: transform
+    target: "github.com/anthropics/anthropic-sdk-go.MessageService.New"
+    template: 'whatapanthropic.WrapAndNewMessage({{.Arg0}}, {{.Receiver}}, {{.Arg1}})'
+    imports:
+      - "github.com/whatap/go-api/instrumentation/llm/github.com/anthropics/anthropic-sdk-go/whatapanthropic"
+    signature: {minArgs: 2, maxArgs: 2}
+  - type: transform
+    target: "github.com/anthropics/anthropic-sdk-go.MessageService.NewStreaming"
+    template: 'whatapanthropic.WrapAndNewMessageStreaming({{.Arg0}}, {{.Receiver}}, {{.Arg1}})'
+    imports:
+      - "github.com/whatap/go-api/instrumentation/llm/github.com/anthropics/anthropic-sdk-go/whatapanthropic"
+    signature: {minArgs: 2, maxArgs: 2}
+
+  # §253 — anthropic.NewClient(opts ...option.RequestOption) constructor
+  # wrap. Whatap helper prepends option.WithHTTPClient(wrapped) before
+  # user opts (Anthropic SDK applies options last-write-wins, so user-
+  # supplied HTTPClient overrides the wrap). {{.Args}} forwards all
+  # literal arguments — the `opts...` spread form is a known limitation
+  # (nodeToString drops the trailing `...`); manual wrap covers it.
+  - type: transform
+    target: "github.com/anthropics/anthropic-sdk-go.NewClient"
+    template: 'whatapanthropic.NewClient({{.Args}})'
+    imports:
+      - "github.com/whatap/go-api/instrumentation/llm/github.com/anthropics/anthropic-sdk-go/whatapanthropic"
+
+  # §255 — openai/openai-go (공식 SDK) ChatCompletionService wrap: user code's
+  # `client.Chat.Completions.New(ctx, params)` →
+  # `whatapopenaigo.WrapAndNewChatCompletion(ctx, client.Chat.Completions, params)`.
+  # 3단계 selector — Receiver = `client.Chat.Completions` (ChatCompletionService
+  # value) 를 wrap helper 에 그대로 전달. Signature{maxArgs:2} 로 opts 사용
+  # 케이스는 수동 어댑터 호출 필요.
+  - type: transform
+    target: "github.com/openai/openai-go.ChatCompletionService.New"
+    template: 'whatapopenaigo.WrapAndNewChatCompletion({{.Arg0}}, {{.Receiver}}, {{.Arg1}})'
+    imports:
+      - "github.com/whatap/go-api/instrumentation/llm/github.com/openai/openai-go/whatapopenaigo"
+    signature: {minArgs: 2, maxArgs: 2}
+  - type: transform
+    target: "github.com/openai/openai-go.ChatCompletionService.NewStreaming"
+    template: 'whatapopenaigo.WrapAndNewChatCompletionStreaming({{.Arg0}}, {{.Receiver}}, {{.Arg1}})'
+    imports:
+      - "github.com/whatap/go-api/instrumentation/llm/github.com/openai/openai-go/whatapopenaigo"
+    signature: {minArgs: 2, maxArgs: 2}
+
+  # §255 — openai.NewClient(opts ...option.RequestOption) constructor wrap.
+  # Whatap helper prepends option.WithHTTPClient(wrapped); user opts override
+  # last-write-wins. {{.Args}} forwards literal args — spread form (`opts...`)
+  # is a known limitation, manual wrap covers it.
+  - type: transform
+    target: "github.com/openai/openai-go.NewClient"
+    template: 'whatapopenaigo.NewClient({{.Args}})'
+    imports:
+      - "github.com/whatap/go-api/instrumentation/llm/github.com/openai/openai-go/whatapopenaigo"

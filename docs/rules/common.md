@@ -125,7 +125,7 @@ if err == nil {
 
 ## Context Preservation Principle
 
-During AST instrumentation, **context propagation should be maximized** to minimize goroutine ID extraction calls.
+During instrumentation, **context propagation should be maximized** to minimize goroutine ID extraction calls.
 
 ### TraceContext Lookup Priority
 

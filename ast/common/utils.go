@@ -134,51 +134,7 @@ func FindCallExpr(fn *dst.FuncDecl, pkgName, funcName string) *dst.CallExpr {
 	return result
 }
 
-// RemoveStmt removes statements that satisfy a predicate from the function body.
-func RemoveStmt(fn *dst.FuncDecl, predicate func(dst.Stmt) bool) bool {
-	if fn.Body == nil {
-		return false
-	}
-
-	var newList []dst.Stmt
-	removed := false
-	for _, stmt := range fn.Body.List {
-		if predicate(stmt) {
-			removed = true
-		} else {
-			newList = append(newList, stmt)
-		}
-	}
-	fn.Body.List = newList
-	return removed
-}
-
-// ContainsPackageUsage checks if a specific package is used in the code.
-func ContainsPackageUsage(file *dst.File, packageName string) bool {
-	found := false
-	dst.Inspect(file, func(n dst.Node) bool {
-		if found {
-			return false
-		}
-
-		sel, ok := n.(*dst.SelectorExpr)
-		if !ok {
-			return true
-		}
-
-		ident, ok := sel.X.(*dst.Ident)
-		if !ok {
-			return true
-		}
-
-		if ident.Name == packageName {
-			found = true
-			return false
-		}
-		return true
-	})
-	return found
-}
+// §272 Phase 3 Step 4 — removed RemoveStmt (ModeRemove-only).
 
 // FindDeferShutdownIndex finds the position of defer trace.Shutdown() in main() function.
 // Returns the index if found, -1 if not found.
@@ -205,7 +161,9 @@ func FindDeferShutdownIndex(fn *dst.FuncDecl) int {
 			continue
 		}
 
-		if ident.Name == "trace" && sel.Sel.Name == "Shutdown" {
+		// §213: MatchIdentPkg for go/types precise matching (both aliases)
+		if (MatchIdentPkg(ident, "trace", "github.com/whatap/go-api/trace") ||
+			MatchIdentPkg(ident, "whataptrace", "github.com/whatap/go-api/trace")) && sel.Sel.Name == "Shutdown" {
 			return i
 		}
 	}
@@ -266,24 +224,3 @@ func IsNameDeclared(file *dst.File, name string) bool {
 	return false
 }
 
-// GetPackageNameFromImport extracts the package name from an import path.
-// e.g., "github.com/gin-gonic/gin" → "gin"
-func GetPackageNameFromImport(importPath string) string {
-	// Remove version suffix
-	path := importPath
-	if v := ExtractVersion(path); v != "" {
-		// Use the part before the version
-		idx := len(path) - len(v) - 1
-		if idx > 0 {
-			path = path[:idx]
-		}
-	}
-
-	// Return the last path element
-	for i := len(path) - 1; i >= 0; i-- {
-		if path[i] == '/' {
-			return path[i+1:]
-		}
-	}
-	return path
-}

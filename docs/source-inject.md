@@ -1,153 +1,104 @@
-# Direct Source Modification Mode
+# Inspect the Transformed Source (`--output`)
 
-Directly analyzes source code and generates transformed results in a separate directory.
+> **v0.6.0 notice**: the legacy `whatap-go-inst inject` / `whatap-go-inst generate` CLI subcommands were **removed**. The same "look at the transformed source" workflow is now done with `whatap-go-inst --output` during a normal `go build`. This page documents the replacement. (`whatap-go-inst remove` is still available for manually stripping monitoring code; it is unrelated to the build-wrapper flow because the originals are never modified.)
 
 ## Overview
 
-```bash
-# Inject monitoring code
-whatap-go-inst inject --src ./myapp --output ./instrumented
+Use `--output` (or the `GO_API_AST_OUTPUT_DIR` environment variable) to dump the instrumented source tree while `go build` runs. The original source is not modified.
 
-# Remove monitoring code
-whatap-go-inst remove --src ./instrumented --output ./clean
+```bash
+# Dump transformed source to whatap-instrumented/ (default)
+whatap-go-inst --output go build ./...
+
+# Dump to a custom directory
+whatap-go-inst --output=./instrumented go build ./...
+
+# Via environment variable
+GO_API_AST_OUTPUT_DIR=./instrumented whatap-go-inst go build ./...
 ```
 
 ---
 
-## Usage
+## What gets saved
 
-### Basic Usage
+The output directory is a **complete, buildable Go project**:
 
-```bash
-# Transform entire directory
-whatap-go-inst inject --src ./myapp --output ./instrumented
+- Transformed `.go` files (project sources + any `--external-module` targets)
+- `go.mod` with the `github.com/whatap/go-api` dependency added
+- `go.sum`
+- `_modules/` subtree with `replace` directives (when `--external-module` is used)
 
-# Transform single file
-whatap-go-inst inject --src ./myapp/main.go --output ./instrumented/main.go
-
-# Short options
-whatap-go-inst inject -s ./myapp -o ./instrumented
-
-# Default: src=".", output="./output"
-whatap-go-inst inject
-```
-
-### Remove
-
-```bash
-whatap-go-inst remove -s ./instrumented -o ./clean
-
-# Compare with original (should have no differences)
-diff -r ./original ./clean
-```
+You can change into the output directory and run `go build` directly — it will compile without needing `whatap-go-inst` again. This is useful for inspection, code review, CI artifact, or air-gapped builds.
 
 ---
 
 ## Example
 
-### Complete Workflow
+**Project layout:**
+```
+myapp/
+├── go.mod
+├── main.go
+└── handler.go
+```
 
-**1. Run inject:**
+**Build + dump:**
 ```bash
-whatap-go-inst inject -s ./myapp -o ./instrumented
+whatap-go-inst --output=./instrumented go build -o myapp .
 ```
 
-**2. Check results:**
+**Result:**
+```
+instrumented/
+├── go.mod        # includes github.com/whatap/go-api
+├── go.sum
+├── main.go       # with trace.Init / middleware injected
+└── handler.go    # with httpc / fmt / log transforms applied
+```
+
+**Inspect diffs:**
 ```bash
-diff myapp/main.go instrumented/main.go
+diff -r . ./instrumented | head -40
+# or per-file:
+diff main.go instrumented/main.go
 ```
-
-**3. Build:**
-```bash
-cd instrumented
-go get github.com/whatap/go-api@latest
-go mod tidy
-go build -o ../myapp .
-```
-
-### Before / After
-
-**Original (main.go):**
-```go
-package main
-
-import (
-    "github.com/gin-gonic/gin"
-)
-
-func main() {
-    r := gin.Default()
-    r.GET("/", func(c *gin.Context) {
-        c.JSON(200, gin.H{"message": "hello"})
-    })
-    r.Run(":8080")
-}
-```
-
-**After Transformation (instrumented/main.go):**
-```go
-package main
-
-import (
-    "github.com/gin-gonic/gin"
-    "github.com/whatap/go-api/instrumentation/github.com/gin-gonic/gin/whatapgin"
-    "github.com/whatap/go-api/trace"
-)
-
-func main() {
-    trace.Init(nil)
-    defer trace.Shutdown()
-    r := gin.Default()
-    r.Use(whatapgin.Middleware())  // Middleware auto-injected
-
-    r.GET("/", func(c *gin.Context) {
-        c.JSON(200, gin.H{"message": "hello"})
-    })
-    r.Run(":8080")
-}
-```
-
-After `inject` → `remove`, code is restored identical to the original.
 
 ---
 
-## External Module Instrumentation (v0.5.4+)
+## With `--external-module`
 
 ```bash
-# Specify external module
-whatap-go-inst inject -s . -o ./instrumented --external-module=mycompany/db-lib
-
-# Wildcard patterns
-whatap-go-inst inject -s . -o ./instrumented --external-module="mycompany.com/internal/*"
+whatap-go-inst --output=./instrumented \
+    --external-module="mycompany.com/internal/*" \
+    go build ./...
 ```
 
-Output structure:
-```
-./instrumented/
-├── main.go                  (instrumented)
-├── go.mod                   (replace directive added)
-└── _modules/
-    └── mycompany/
-        └── db-lib/
-            ├── connection.go  (instrumented)
-            └── go.mod         (whatap/go-api require added)
-```
-
-For details, see [Multi-Module Projects](./multi-module.md).
+Matching GOMODCACHE modules are copied into `instrumented/_modules/<sanitized_name>/` with whatap transforms applied, and `instrumented/go.mod` gets matching `replace` directives so the output tree is self-contained. See [Multi-Module Projects](./multi-module.md).
 
 ---
 
-## Notes
+## Verifying 1-to-1 restoration
 
-- **go.mod handling**: After inject, run `go get github.com/whatap/go-api@latest` + `go mod tidy` in the output directory.
-- **Replace directives**: If original go.mod has replace with relative paths, paths may need adjustment.
-- **Skipped files**: `_test.go`, files already importing `whatap/go-api`, files with parsing errors.
-- **Non-Go files**: `go.mod`, `go.sum`, config files, etc. are copied as-is.
-- **Comment preservation**: Using the `dave/dst` library, comments from the original code are preserved.
+Under the build-wrapper flow, the original tree is never written to, so a 1-to-1 "remove" pass is unnecessary — the `whatap-go-inst remove` subcommand exists to clean up **manually written** `go-api` calls (typical use case: migrating from hand-rolled instrumentation to the auto build-wrapper), not to undo auto-injected changes. You can prove the wrapper leaves originals alone by asserting the source tree is untouched:
+
+```bash
+# Before build
+sha256sum $(find ./myapp -name '*.go') > /tmp/before.sha
+
+# Instrumented build
+whatap-go-inst --output=./instrumented go build -o /tmp/myapp ./myapp
+
+# After build — originals must be unchanged
+sha256sum $(find ./myapp -name '*.go') > /tmp/after.sha
+diff /tmp/before.sha /tmp/after.sha    # must be empty
+```
+
+The transformed copy lives in `./instrumented/`; the original `./myapp/` is byte-identical after the build.
 
 ---
 
 ## Next Steps
 
-- [Build Wrapper Mode](./build-wrapper.md) — Simpler approach (recommended)
-- [Multi-Module Projects](./multi-module.md)
+- [Build Wrapper Mode](./build-wrapper.md) — the default workflow
+- [Multi-Module Projects](./multi-module.md) — `--external-module` details
+- [Configuration Guide](./config.md) — `.whatap/config.yaml` fields

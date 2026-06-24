@@ -54,6 +54,16 @@
 | zap | All versions | `go.uber.org/zap` | - |
 | fmt | Go standard | `fmt` | - |
 
+## LLM SDKs
+
+| Library | Supported Versions | Import Path | Auto-inject |
+|---------|-------------------|-------------|-------------|
+| sashabaranov go-openai | v1.40.5+ | `github.com/sashabaranov/go-openai` | `NewClient`, `NewClientWithConfig`, `Client.CreateChatCompletion(Stream)`, `Client.CreateCompletion`, `Client.CreateEmbeddings` |
+| eino-ext openai | All versions | `github.com/cloudwego/eino-ext/components/model/openai` | `NewChatModel` (constructor only — `Generate`/`Stream` need `whatapeino.WrapChatModel(cm)`) |
+| eino-ext claude | All versions | `github.com/cloudwego/eino-ext/components/model/claude` | `NewChatModel` (constructor only) |
+
+> Requires `llm_enabled=true` in `whatap.conf`. Constructor rewrites wrap the SDK's HTTP transport so the RoundTrip single entry point captures the LLM step (URL, tokens, model). For interface-returning constructors (eino-ext), only the constructor is auto-injected; the method wrap (`WrapChatModel`) is manual because the constructor returns an interface type.
+
 ---
 
 ## Version Filtering (v0.5.4+)
@@ -71,7 +81,7 @@ transformer is silently skipped — no error is produced.
 | chi | `github.com/go-chi/chi` | `""`, `v5` | chi/v6 |
 | goredis | `github.com/redis/go-redis` | `v9` | go-redis/v10 |
 | goredis | `github.com/go-redis/redis` | `v8` | redis/v7 |
-| aerospike | `github.com/aerospike/aerospike-client-go` | `v6`, `v8` | v7, v9 |
+| aerospike | `github.com/aerospike/aerospike-client-go` | `v6` | v7, v8, v9 |
 
 > The remaining 17 transformers use exact match (`HasImport`) and are not affected by version filtering.
 

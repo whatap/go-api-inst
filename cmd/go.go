@@ -1,17 +1,12 @@
 package cmd
 
 import (
-	"bufio"
 	"fmt"
-	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
-	"regexp"
 	"strings"
 
-	"github.com/whatap/go-api-inst/ast"
-	"github.com/whatap/go-api-inst/ast/common"
 	"github.com/whatap/go-api-inst/config"
 
 	"github.com/spf13/cobra"
@@ -27,31 +22,30 @@ Usage:
   whatap-go-inst go build -o myapp .
   whatap-go-inst go run .
   whatap-go-inst go test ./...
-  whatap-go-inst --fast go build ./...
+  whatap-go-inst --output go build ./...              # persist to whatap-instrumented/ (NoOptDefVal)
   whatap-go-inst --output ./instrumented go build ./...
 
 Global options (before 'go'):
   --error-tracking    Enable error tracking code injection
   --config <path>     Specify config file path
-  --fast              Fast mode (requires init, uses toolexec)
-  --output <dir>      Instrumented source output directory (default: whatap-instrumented/)
-  --no-output         Do not save instrumented source
+  --output [<dir>]    Persist instrumented source tree. No value → whatap-instrumented/.
+                      Omit flag → no save. Emitted tree is standalone-buildable
+                      (originals + transformed + _modules/ + go.mod replace).
+  --external-module   Module(s) from GOMODCACHE to instrument (repeatable, comma-separated)
 
-Internal behavior (default wrap mode):
-  1. Copy source to temporary directory
-  2. Inject instrumentation code (inject)
-  3. Run go get github.com/whatap/go-api@latest
-  4. Run go mod tidy
-  5. Execute build
-  6. Save transformed source to whatap-instrumented/ (unless --no-output)
-
-Internal behavior (--fast mode):
-  1. Include tool.go with -tags whatap_tools
-  2. Inject instrumentation code at compile time via toolexec
-  * Prerequisite: tool.go must be created via init`,
+Internal behavior (§234 — toolexec only, post v0.5.5):
+  1. Auto-add github.com/whatap/go-api dependency (if not in go.mod) + go mod tidy
+  2. Pre-resolve whatap package archives via go list
+  3. Spawn 'go build' with -toolexec=whatap-go-inst; transformed .go files are
+     written directly under $WORK/bXXX/whatap/src/<importpath>/ so the compiler
+     picks them up without an intermediate tmpDir
+  4. Patch importcfg with resolved archive paths for new whatap imports
+  5. If --output is set, copy the resulting source tree (originals + transformed
+     + go.mod/go.sum + _modules/ for external modules) for standalone reproduction`,
 	DisableFlagParsing: true,
 	Run: func(cmd *cobra.Command, args []string) {
-		// Use global flags from rootCmd (errorTracking, fastMode, noOutput, outputDir, configPath)
+		// Use global flags from rootCmd (errorTracking, outputDir, externalModules,
+		// configPath). --fast is retained as a hidden no-op for backward compat.
 		// Load config
 		loader := config.NewLoader()
 		loader.ConfigPath = configPath
@@ -133,18 +127,11 @@ Internal behavior (--fast mode):
 				}
 			}
 
-			if fastMode {
-				// --fast flag: fast mode (toolexec, requires init)
-				// Show message and exit if tool.go doesn't exist
-				if !hasToolFile(projectDir) {
-					printInitRequiredMessage()
-					os.Exit(1)
-				}
-				runFastBuild(goSubCmd, goArgs, cfg, errorTrackingEnabled, noOutput)
-			} else {
-				// Default: wrap mode (no init required)
-				runWithInjectWithConfig(goSubCmd, goArgs, cfg, errorTrackingEnabled, noOutput)
-			}
+			// §234 step 10: fast (toolexec) is the only build mode. The legacy
+			// wrap/inject/generate paths were removed after §195 promoted fast
+			// to default (2026-03-19). --fast is retained as a no-op for
+			// backward compatibility. See runFastBuild in go_fast.go.
+			runFastBuild(goSubCmd, goArgs, cfg, errorTrackingEnabled)
 		} else {
 			// Pass other commands through as-is
 			runGoCommand(goSubCmd, goArgs)
@@ -208,11 +195,11 @@ func shouldApplyInject(subCmd string) bool {
 	}
 }
 
-// convertBuildTargets converts build target paths relative to tmpDir
-// Since we copied based on srcDir, convert all paths to relative paths based on tmpDir
-// Example: testapps/custom-app/... → ./...
-//
-//	testapps/custom-app/main.go → ./main.go
+// convertBuildTargets rewrites build target paths so `go build` is invoked from
+// the project root (srcDir = go.mod dir). When the user runs whatap-go-inst
+// from a sub-directory, targets like `.` or `./...` need to be translated to
+// the equivalent path relative to srcDir.
+// Example (cwd=project/cmd/app, srcDir=project): "." → "./cmd/app"
 func convertBuildTargets(args []string, srcDir, cwd string) []string {
 	absSrcDir, err := filepath.Abs(srcDir)
 	if err != nil {
@@ -321,576 +308,6 @@ func convertBuildTargets(args []string, srcDir, cwd string) []string {
 		}
 	}
 	return result
-}
-
-// runWithInjectWithConfig builds using Config
-func runWithInjectWithConfig(subCmd string, args []string, cfg *config.Config, errorTracking bool, noOutput bool) {
-	debug := cfg.Instrumentation.Debug
-	cwd, err := os.Getwd()
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "Cannot find current directory: %v\n", err)
-		os.Exit(1)
-	}
-
-	// Instrumented source output directory (config > env var > default)
-	var instrumentedOutputDir string
-	if !noOutput {
-		instrumentedOutputDir = cfg.Instrumentation.OutputDir
-		if instrumentedOutputDir == "" {
-			instrumentedOutputDir = os.Getenv("GO_API_AST_OUTPUT_DIR")
-		}
-		if instrumentedOutputDir == "" {
-			instrumentedOutputDir = filepath.Join(cwd, "whatap-instrumented")
-		}
-	}
-
-	// 1. Create temporary directory
-	tmpDir, err := os.MkdirTemp("", "whatap-go-inst-build-*")
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "Failed to create temporary directory: %v\n", err)
-		os.Exit(1)
-	}
-	defer os.RemoveAll(tmpDir)
-
-	if debug {
-		fmt.Fprintf(os.Stderr, "[whatap-go-inst] Temporary directory: %s\n", tmpDir)
-	}
-
-	// 2. Copy source (based on BaseDir)
-	srcDir := cfg.BaseDir
-	if srcDir == "" {
-		srcDir = cwd
-	}
-	if debug {
-		fmt.Fprintf(os.Stderr, "[whatap-go-inst] Copying source... (from: %s)\n", srcDir)
-	}
-	if err := copySourceFiles(srcDir, tmpDir, cfg.GetCopyExcludeDirs()); err != nil {
-		fmt.Fprintf(os.Stderr, "Failed to copy source: %v\n", err)
-		os.Exit(1)
-	}
-
-	// 2.5. Process external modules — copy, inject, add replace (§138)
-	var extModResults []ExternalModuleResult
-	if cfg.HasExternalModules() {
-		if debug {
-			fmt.Fprintf(os.Stderr, "[whatap-go-inst] Processing external modules...\n")
-		}
-		var extErr error
-		extModResults, extErr = prepareExternalModules(cfg, srcDir, tmpDir, errorTracking, debug)
-		if extErr != nil {
-			fmt.Fprintf(os.Stderr, "Failed to process external modules: %v\n", extErr)
-			os.Exit(1)
-		}
-	}
-
-	// 3. Run inject
-	if debug {
-		fmt.Fprintf(os.Stderr, "[whatap-go-inst] Injecting instrumentation code...\n")
-	}
-	if err := injectDir(tmpDir, errorTracking, cfg); err != nil {
-		fmt.Fprintf(os.Stderr, "Failed to inject instrumentation code: %v\n", err)
-		os.Exit(1)
-	}
-
-	// 4. Install go-api latest version and run go mod tidy
-	if debug {
-		fmt.Fprintf(os.Stderr, "[whatap-go-inst] Running go get github.com/whatap/go-api@latest...\n")
-	}
-	getCmd := exec.Command("go", "get", "github.com/whatap/go-api@latest")
-	getCmd.Dir = tmpDir
-	if debug {
-		getCmd.Stdout = os.Stderr
-		getCmd.Stderr = os.Stderr
-	}
-	getCmd.Run() // Ignore error (go.mod might not exist)
-
-	// 4.5. Finalize external modules — add go-api to copied modules' go.mod (§138)
-	if len(extModResults) > 0 {
-		if err := finalizeExternalModules(extModResults, tmpDir, debug); err != nil {
-			fmt.Fprintf(os.Stderr, "[whatap-go-inst] Warning: finalize external modules: %v\n", err)
-		}
-	}
-
-	if debug {
-		fmt.Fprintf(os.Stderr, "[whatap-go-inst] Running go mod tidy...\n")
-	}
-	tidyCmd := exec.Command("go", "mod", "tidy")
-	tidyCmd.Dir = tmpDir
-	if debug {
-		tidyCmd.Stdout = os.Stderr
-		tidyCmd.Stderr = os.Stderr
-	}
-	if err := tidyCmd.Run(); err != nil {
-		// Warn but continue - some projects have private dependencies that fail tidy
-		fmt.Fprintf(os.Stderr, "[whatap-go-inst] Warning: go mod tidy failed (continuing anyway): %v\n", err)
-	}
-
-	// 5. Parse and convert output file path
-	outputFile, newArgs := parseOutputFlag(args)
-	if outputFile != "" && !filepath.IsAbs(outputFile) {
-		// Convert relative path to absolute path based on original directory
-		outputFile = filepath.Join(cwd, outputFile)
-	}
-
-	// 5.5. Convert build target paths (srcDir-based → tmpDir-based)
-	// testapps/custom-app/... → ./...
-	newArgs = convertBuildTargets(newArgs, srcDir, cwd)
-
-	// 6. Execute build
-	var buildArgs []string
-	buildArgs = append(buildArgs, subCmd)
-	if outputFile != "" {
-		buildArgs = append(buildArgs, "-o", outputFile)
-	}
-	buildArgs = append(buildArgs, newArgs...)
-
-	if debug {
-		fmt.Fprintf(os.Stderr, "[whatap-go-inst] go %s\n", strings.Join(buildArgs, " "))
-	}
-
-	buildCmd := exec.Command("go", buildArgs...)
-	buildCmd.Dir = tmpDir
-	buildCmd.Stdin = os.Stdin
-	buildCmd.Stdout = os.Stdout
-	buildCmd.Stderr = os.Stderr
-
-	if err := buildCmd.Run(); err != nil {
-		if exitErr, ok := err.(*exec.ExitError); ok {
-			os.Exit(exitErr.ExitCode())
-		}
-		os.Exit(1)
-	}
-
-	// 7. Copy instrumented source (unless --no-output)
-	if !noOutput {
-		if debug {
-			fmt.Fprintf(os.Stderr, "[whatap-go-inst] Copying instrumented source: %s\n", instrumentedOutputDir)
-		}
-		if err := copyInstrumentedSource(tmpDir, instrumentedOutputDir); err != nil {
-			fmt.Fprintf(os.Stderr, "Warning: Failed to copy instrumented source: %v\n", err)
-		}
-	}
-}
-
-// printInitRequiredMessage prints init required message
-func printInitRequiredMessage() {
-	fmt.Fprintln(os.Stderr, "")
-	fmt.Fprintln(os.Stderr, "❌ whatap_inst.tool.go not found.")
-	fmt.Fprintln(os.Stderr, "")
-	fmt.Fprintln(os.Stderr, "Fast mode (--fast) requires init. Please run init first:")
-	fmt.Fprintln(os.Stderr, "  whatap-go-inst init")
-	fmt.Fprintln(os.Stderr, "")
-	fmt.Fprintln(os.Stderr, "Or use default wrap mode (no init required):")
-	fmt.Fprintln(os.Stderr, "  whatap-go-inst go build ./...")
-	fmt.Fprintln(os.Stderr, "")
-}
-
-// hasToolFile checks if whatap_inst.tool.go file exists
-func hasToolFile(projectDir string) bool {
-	toolFilePath := filepath.Join(projectDir, "whatap_inst.tool.go")
-	_, err := os.Stat(toolFilePath)
-	return err == nil
-}
-
-// runFastBuild fast build mode (using toolexec)
-func runFastBuild(subCmd string, args []string, cfg *config.Config, errorTracking bool, noOutput bool) {
-	debug := cfg.Instrumentation.Debug
-
-	// Project directory (cfg.BaseDir or cwd)
-	projectDir := cfg.BaseDir
-	if projectDir == "" {
-		projectDir, _ = os.Getwd()
-	}
-	// Convert to absolute path for toolexec (§72 fix)
-	if !filepath.IsAbs(projectDir) {
-		absProjectDir, err := filepath.Abs(projectDir)
-		if err == nil {
-			projectDir = absProjectDir
-		}
-	}
-
-	if debug {
-		fmt.Fprintf(os.Stderr, "[whatap-go-inst] Build mode: fast (toolexec)\n")
-	}
-
-	// 1. Find current executable path
-	execPath, err := os.Executable()
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "Cannot find executable path: %v\n", err)
-		os.Exit(1)
-	}
-
-	// 2. Configure toolexec flag
-	toolexecFlag := fmt.Sprintf("-toolexec=%s toolexec", execPath)
-	if errorTracking {
-		toolexecFlag = fmt.Sprintf("-toolexec=%s toolexec --error-tracking", execPath)
-	}
-
-	// 3. Convert build target paths (when running from outside)
-	cwd, _ := os.Getwd()
-	convertedArgs := convertBuildTargets(args, projectDir, cwd)
-
-	// 4. Set instrumented source output directory (unless --no-output)
-	var instrumentedOutputDir string
-	if !noOutput {
-		instrumentedOutputDir = cfg.Instrumentation.OutputDir
-		if instrumentedOutputDir == "" {
-			instrumentedOutputDir = os.Getenv("GO_API_AST_OUTPUT_DIR")
-		}
-		if instrumentedOutputDir == "" {
-			instrumentedOutputDir = filepath.Join(cwd, "whatap-instrumented")
-		}
-		// Convert to absolute path
-		if !filepath.IsAbs(instrumentedOutputDir) {
-			instrumentedOutputDir = filepath.Join(cwd, instrumentedOutputDir)
-		}
-	}
-
-	// 5. Configure go command
-	var buildArgs []string
-	buildArgs = append(buildArgs, subCmd)
-	buildArgs = append(buildArgs, "-tags", "whatap_tools") // Include tool.go created by init
-	buildArgs = append(buildArgs, toolexecFlag)
-	buildArgs = append(buildArgs, convertedArgs...)
-
-	if debug {
-		fmt.Fprintf(os.Stderr, "[whatap-go-inst] ProjectDir: %s\n", projectDir)
-		if !noOutput {
-			fmt.Fprintf(os.Stderr, "[whatap-go-inst] InstrumentedOutput: %s\n", instrumentedOutputDir)
-		}
-		fmt.Fprintf(os.Stderr, "[whatap-go-inst] go %s\n", strings.Join(buildArgs, " "))
-	}
-
-	// 6. Execute go command (in project directory)
-	// Pass save path to toolexec via GO_API_AST_OUTPUT_DIR environment variable
-	// Pass project directory to toolexec via GO_API_PROJECT_DIR environment variable (§72 fix)
-	buildCmd := exec.Command("go", buildArgs...)
-	buildCmd.Dir = projectDir
-	// Build environment with our variables, filtering out any existing duplicates
-	env := os.Environ()
-	env = filterEnvVar(env, "GO_API_AST_OUTPUT_DIR")
-	env = filterEnvVar(env, "GO_API_PROJECT_DIR")
-	if !noOutput {
-		env = append(env, "GO_API_AST_OUTPUT_DIR="+instrumentedOutputDir)
-	}
-	env = append(env, "GO_API_PROJECT_DIR="+projectDir)
-	buildCmd.Env = env
-	buildCmd.Stdin = os.Stdin
-	buildCmd.Stdout = os.Stdout
-	buildCmd.Stderr = os.Stderr
-
-	buildErr := buildCmd.Run()
-
-	// Copy go.mod, go.sum (unless --no-output)
-	if !noOutput {
-		copyProjectFiles(projectDir, instrumentedOutputDir)
-		if debug {
-			fmt.Fprintf(os.Stderr, "[whatap-go-inst] go.mod, go.sum copied: %s\n", instrumentedOutputDir)
-		}
-	}
-
-	if buildErr != nil {
-		if exitErr, ok := buildErr.(*exec.ExitError); ok {
-			os.Exit(exitErr.ExitCode())
-		}
-		os.Exit(1)
-	}
-}
-
-// copyProjectFiles copies project files like go.mod, go.sum
-func copyProjectFiles(srcDir, dstDir string) {
-	files := []string{"go.mod", "go.sum"}
-	for _, file := range files {
-		srcPath := filepath.Join(srcDir, file)
-		dstPath := filepath.Join(dstDir, file)
-
-		data, err := os.ReadFile(srcPath)
-		if err != nil {
-			continue // Skip if file doesn't exist
-		}
-
-		os.MkdirAll(dstDir, 0755)
-		os.WriteFile(dstPath, data, 0644)
-	}
-}
-
-// copyInstrumentedSource copies instrumented source to output directory
-func copyInstrumentedSource(src, dst string) error {
-	// Remove existing directory and recreate
-	os.RemoveAll(dst)
-	if err := os.MkdirAll(dst, 0755); err != nil {
-		return err
-	}
-
-	return filepath.Walk(src, func(path string, info os.FileInfo, err error) error {
-		if err != nil {
-			return nil
-		}
-
-		relPath, err := filepath.Rel(src, path)
-		if err != nil {
-			return nil
-		}
-
-		dstPath := filepath.Join(dst, relPath)
-
-		// Skip directories (build artifacts, previous instrumentation results)
-		if info.IsDir() {
-			base := filepath.Base(path)
-			if base == "instrumented" || base == "whatap-instrumented" || base == "output" || base == "cleaned" {
-				return filepath.SkipDir
-			}
-			return os.MkdirAll(dstPath, info.Mode())
-		}
-
-		// Copy only .go, go.mod, go.sum files
-		ext := filepath.Ext(path)
-		base := filepath.Base(path)
-		if ext == ".go" || base == "go.mod" || base == "go.sum" {
-			return copyFile(path, dstPath)
-		}
-
-		return nil
-	})
-}
-
-// copySourceFiles copies all source files to temporary directory
-// excludeDirs: list of directory names to skip (e.g., ".git", "node_modules")
-func copySourceFiles(src, dst string, excludeDirs []string) error {
-	// Create a map for faster lookup
-	excludeMap := make(map[string]bool)
-	for _, dir := range excludeDirs {
-		excludeMap[dir] = true
-	}
-
-	return filepath.Walk(src, func(path string, info os.FileInfo, err error) error {
-		if err != nil {
-			return nil // Ignore error and continue
-		}
-
-		// Calculate relative path
-		relPath, err := filepath.Rel(src, path)
-		if err != nil {
-			return nil
-		}
-
-		dstPath := filepath.Join(dst, relPath)
-
-		// Skip excluded directories
-		if info.IsDir() {
-			base := filepath.Base(path)
-			if excludeMap[base] {
-				return filepath.SkipDir
-			}
-			return os.MkdirAll(dstPath, info.Mode())
-		}
-
-		// Copy all files (go.mod needs special handling for replace paths)
-		base := filepath.Base(path)
-		if base == "go.mod" {
-			return copyGoMod(path, dstPath, src, dst)
-		}
-
-		return copyFile(path, dstPath)
-	})
-}
-
-// copyFile copies a file
-func copyFile(src, dst string) error {
-	srcFile, err := os.Open(src)
-	if err != nil {
-		return err
-	}
-	defer srcFile.Close()
-
-	// Create directory
-	if err := os.MkdirAll(filepath.Dir(dst), 0755); err != nil {
-		return err
-	}
-
-	dstFile, err := os.Create(dst)
-	if err != nil {
-		return err
-	}
-	defer dstFile.Close()
-
-	_, err = io.Copy(dstFile, srcFile)
-	return err
-}
-
-// copyGoMod copies go.mod file while adjusting replace relative paths
-func copyGoMod(src, dst, srcDir, dstDir string) error {
-	srcFile, err := os.Open(src)
-	if err != nil {
-		return err
-	}
-	defer srcFile.Close()
-
-	// Create directory
-	if err := os.MkdirAll(filepath.Dir(dst), 0755); err != nil {
-		return err
-	}
-
-	dstFile, err := os.Create(dst)
-	if err != nil {
-		return err
-	}
-	defer dstFile.Close()
-
-	// replace statement pattern: replace module => path or replace module path
-	// Relative paths start with ./ or ../
-	replacePattern := regexp.MustCompile(`^(\s*replace\s+\S+\s+=>\s+)(\.\.?/.*)$`)
-	replaceBlockPattern := regexp.MustCompile(`^(\s*)(\.\.?/\S+)(\s+.*)$`)
-
-	scanner := bufio.NewScanner(srcFile)
-	writer := bufio.NewWriter(dstFile)
-	defer writer.Flush()
-
-	inReplaceBlock := false
-
-	for scanner.Scan() {
-		line := scanner.Text()
-
-		// replace ( block start
-		if strings.HasPrefix(strings.TrimSpace(line), "replace (") {
-			inReplaceBlock = true
-			writer.WriteString(line + "\n")
-			continue
-		}
-
-		// replace block end
-		if inReplaceBlock && strings.TrimSpace(line) == ")" {
-			inReplaceBlock = false
-			writer.WriteString(line + "\n")
-			continue
-		}
-
-		// Single replace statement processing
-		if matches := replacePattern.FindStringSubmatch(line); matches != nil {
-			prefix := matches[1]
-			relativePath := matches[2]
-			adjustedPath := adjustRelativePath(relativePath, srcDir, dstDir)
-			writer.WriteString(prefix + adjustedPath + "\n")
-			continue
-		}
-
-		// replace block internal processing
-		if inReplaceBlock {
-			if matches := replaceBlockPattern.FindStringSubmatch(line); matches != nil {
-				indent := matches[1]
-				relativePath := matches[2]
-				suffix := matches[3]
-				adjustedPath := adjustRelativePath(relativePath, srcDir, dstDir)
-				writer.WriteString(indent + adjustedPath + suffix + "\n")
-				continue
-			}
-		}
-
-		writer.WriteString(line + "\n")
-	}
-
-	return scanner.Err()
-}
-
-// adjustRelativePath adjusts relative path from srcDir-based to dstDir-based
-func adjustRelativePath(relativePath, srcDir, dstDir string) string {
-	// Return as-is if not a relative path
-	if !strings.HasPrefix(relativePath, ".") {
-		return relativePath
-	}
-
-	// Calculate absolute path based on srcDir
-	srcGoModDir := srcDir
-	absPath := filepath.Join(srcGoModDir, relativePath)
-	absPath = filepath.Clean(absPath)
-
-	// Calculate relative path from dstDir to absPath
-	newRelPath, err := filepath.Rel(dstDir, absPath)
-	if err != nil {
-		// Return original on error
-		return relativePath
-	}
-
-	// Convert Windows path to Unix style (go.mod uses Unix style)
-	newRelPath = filepath.ToSlash(newRelPath)
-
-	return newRelPath
-}
-
-// injectDir injects instrumentation code into all Go files in directory
-func injectDir(dir string, errorTracking bool, cfg *config.Config) error {
-	injector := ast.NewInjector()
-	injector.ErrorTrackingEnabled = errorTracking
-	if cfg != nil {
-		injector.EnabledPackages = cfg.GetEnabledPackages()
-		injector.Config = cfg // For custom rules access (§4)
-	}
-
-	return filepath.Walk(dir, func(path string, info os.FileInfo, err error) error {
-		if err != nil {
-			return nil
-		}
-
-		// Get exclude patterns from config
-		var excludePatterns []string
-		if cfg != nil {
-			excludePatterns = cfg.GetExcludePatterns()
-		}
-
-		if info.IsDir() {
-			if common.ShouldSkipDirectory(path, dir, excludePatterns) {
-				return filepath.SkipDir
-			}
-			return nil
-		}
-
-		// Process only Go files
-		if filepath.Ext(path) != ".go" {
-			return nil
-		}
-
-		// Skip files based on exclude patterns
-		if common.ShouldSkipFile(path, dir, excludePatterns) {
-			return nil
-		}
-
-		// Transform to temporary file
-		tmpFile := path + ".tmp"
-		if err := injector.InjectFile(path, tmpFile); err != nil {
-			// Skip on transformation failure
-			os.Remove(tmpFile)
-			return nil
-		}
-
-		// Replace original
-		if err := os.Rename(tmpFile, path); err != nil {
-			os.Remove(tmpFile)
-			return err
-		}
-
-		return nil
-	})
-}
-
-// parseOutputFlag parses -o flag
-func parseOutputFlag(args []string) (string, []string) {
-	var outputFile string
-	var newArgs []string
-
-	for i := 0; i < len(args); i++ {
-		if args[i] == "-o" && i+1 < len(args) {
-			outputFile = args[i+1]
-			i++ // Skip argument after -o
-			continue
-		}
-		if strings.HasPrefix(args[i], "-o=") {
-			outputFile = strings.TrimPrefix(args[i], "-o=")
-			continue
-		}
-		newArgs = append(newArgs, args[i])
-	}
-
-	return outputFile, newArgs
 }
 
 // runGoCommand executes go command

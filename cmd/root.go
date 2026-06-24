@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/whatap/go-api-inst/ast/common"
+	"github.com/whatap/go-api-inst/ast"
 	"github.com/whatap/go-api-inst/config"
 	"github.com/whatap/go-api-inst/report"
 
@@ -24,16 +24,16 @@ var (
 	// reportPath --report flag
 	reportPath string
 
-	// outputDir --output flag (instrumented source output directory)
+	// outputDir --output flag (instrumented source output directory).
+	// §234: empty = do not save; "--output" with no value = NoOptDefVal fallback
+	// ("whatap-instrumented"); "--output <dir>" = user path.
 	outputDir string
-
-	// noOutput --no-output flag (do not save instrumented source)
-	noOutput bool
 
 	// errorTracking --error-tracking flag
 	errorTracking bool
 
-	// fastMode --fast flag (use toolexec, requires init)
+	// fastMode --fast flag (legacy no-op; fast is the only mode since §234).
+	// Kept so existing Dockerfiles passing --fast still parse.
 	fastMode bool
 
 	// externalModules --external-module flag (external modules to instrument, §138)
@@ -49,11 +49,14 @@ var (
 var rootCmd = &cobra.Command{
 	Use:   "whatap-go-inst",
 	Short: "Go AST-based automatic instrumentation code injection/removal tool",
-	Long: `whatap-go-inst is a CLI tool that automatically injects or removes
-whatap/go-api monitoring code into Go source code at build time.
+	Long: `whatap-go-inst is a CLI tool that automatically injects
+whatap/go-api monitoring code into Go source code at build time
+(toolexec pipeline) and removes it when needed.
 
 Usage examples:
-  whatap-go-inst inject --src ./myapp --output ./instrumented
+  whatap-go-inst go build ./...
+  whatap-go-inst --output go build ./...              # persist to whatap-instrumented/
+  whatap-go-inst --output ./out go build ./...        # persist to ./out/
   whatap-go-inst remove --src ./myapp --output ./clean
 
 Configuration:
@@ -105,14 +108,6 @@ func loadConfigWithProjectDir(projectDir string) {
 	}
 }
 
-// GetConfig returns the current configuration
-func GetConfig() *config.Config {
-	if globalConfig == nil {
-		return config.NewConfig()
-	}
-	return globalConfig
-}
-
 // ReloadConfigWithProjectDir reloads configuration based on project directory
 // Called from inject, remove commands after srcDir is determined
 func ReloadConfigWithProjectDir(projectDir string) *config.Config {
@@ -134,10 +129,15 @@ func init() {
 	rootCmd.PersistentFlags().BoolVarP(&verbose, "verbose", "v", false, "Verbose output (include transformation details)")
 	rootCmd.PersistentFlags().BoolVarP(&quiet, "quiet", "q", false, "Summary only output")
 	rootCmd.PersistentFlags().StringVar(&reportPath, "report", "", "Report file path (JSON format)")
-	rootCmd.PersistentFlags().StringVar(&outputDir, "output", "", "Instrumented source output directory (default: whatap-instrumented/)")
-	rootCmd.PersistentFlags().BoolVar(&noOutput, "no-output", false, "Do not save instrumented source")
+	// §234: --output without a value falls back to "whatap-instrumented"
+	// (NoOptDefVal). Empty string means "do not save instrumented source".
+	rootCmd.PersistentFlags().StringVar(&outputDir, "output", "", "Instrumented source output directory (use --output with no value for 'whatap-instrumented/', or --output <dir>)")
+	rootCmd.PersistentFlags().Lookup("output").NoOptDefVal = "whatap-instrumented"
 	rootCmd.PersistentFlags().BoolVar(&errorTracking, "error-tracking", false, "Enable error tracking code injection")
-	rootCmd.PersistentFlags().BoolVar(&fastMode, "fast", false, "Fast mode (use toolexec, requires init)")
+	// §234: --fast is now the only build mode. Flag preserved as a no-op for
+	// backward compatibility with Dockerfiles / scripts that still pass it.
+	rootCmd.PersistentFlags().BoolVar(&fastMode, "fast", false, "Fast (toolexec) build mode — default and only mode since v0.5.5")
+	_ = rootCmd.PersistentFlags().MarkHidden("fast")
 	rootCmd.PersistentFlags().StringSliceVar(&externalModules, "external-module", nil, "External module to instrument from GOMODCACHE (repeatable, comma-separated)")
 }
 
@@ -167,28 +167,48 @@ func FinalizeReport() {
 	}
 }
 
-// loadDependencies loads go.mod dependencies and matches against transformers
+// loadDependencies loads go.mod dependencies and matches against the same
+// rule set the runtime engine will actually register.
+//
+// §240: Previously depended on `common.GetAllTransformers()` which returned an
+// empty slice after §227 Step 5 removed the v1 transformer packages (the
+// `common.Register(...)` init-time calls disappeared with them). Every dependency
+// was being reported as `supported=false` even though the v2 engine was
+// instrumenting them correctly.
+//
+// Rule source is the injector's own registry — same path the engine uses at
+// run time (buildRegistry: built-in rules honouring $WHATAP_RULES_YAML dev
+// override, filtered by EnabledPackages + DisabledPackages for §242
+// opt-in / exclusion, plus unfiltered user rules from cfg.Rules). No
+// reimplementation — callers go through `ast.NewInjector() + SetConfig` so
+// report and engine stay in lock step by construction.
 func loadDependencies(r *report.Report, baseDir string) {
-	// Get all registered transformers
-	transformers := common.GetAllTransformers()
-
-	// Convert to TransformerInfo
-	infos := make([]report.TransformerInfo, len(transformers))
-	for i, t := range transformers {
-		infos[i] = report.TransformerInfo{
-			Name:       t.Name(),
-			ImportPath: t.ImportPath(),
-		}
-		// §148: Pass SupportedVersions if transformer implements VersionedTransformer
-		if vt, ok := t.(common.VersionedTransformer); ok {
-			infos[i].SupportedVersions = vt.SupportedVersions()
-		}
+	inj := ast.NewInjector()
+	if globalConfig != nil {
+		inj.EnabledPackages = globalConfig.Instrumentation.EnabledPackages
+		inj.DisabledPackages = globalConfig.Instrumentation.DisabledPackages
+		inj.SetConfig(globalConfig)
 	}
 
-	// Load dependencies
+	// Dedup by package path. Multiple rules targeting the same package
+	// (e.g. gin has WrapEngine + Engine.Use) collapse to a single entry —
+	// the report key is the full import path, not the former Name CSV.
+	infos := make([]report.TransformerInfo, 0)
+	seen := make(map[string]bool)
+	for _, rule := range inj.Rules() {
+		pkg := ast.ExtractRulePackage(rule.Target)
+		if pkg == "" || seen[pkg] {
+			continue
+		}
+		seen[pkg] = true
+		infos = append(infos, report.TransformerInfo{ImportPath: pkg})
+	}
+
 	if err := r.LoadDependenciesFromDir(baseDir, infos); err != nil {
 		if verbose {
 			fmt.Fprintf(os.Stderr, "[whatap-go-inst] Warning: Failed to load go.mod: %v\n", err)
 		}
 	}
 }
+
+// extractRulePackage moved to ast.ExtractRulePackage (§242).

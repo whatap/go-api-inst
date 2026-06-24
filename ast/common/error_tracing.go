@@ -288,12 +288,12 @@ func (et *ErrorTracer) blockHasReturn(block *dst.BlockStmt) bool {
 	return false
 }
 
-// createTraceErrorStmt creates a trace.Error(context.Background(), err) statement
+// createTraceErrorStmt creates a whataptrace.Error(context.Background(), err) statement
 func (et *ErrorTracer) createTraceErrorStmt(errVarName string) *dst.ExprStmt {
 	stmt := &dst.ExprStmt{
 		X: &dst.CallExpr{
 			Fun: &dst.SelectorExpr{
-				X:   dst.NewIdent("trace"),
+				X:   dst.NewIdent("whataptrace"),
 				Sel: dst.NewIdent("Error"),
 			},
 			Args: []dst.Expr{
@@ -356,7 +356,9 @@ func (et *ErrorTracer) isTraceErrorCall(stmt dst.Stmt) bool {
 		return false
 	}
 
-	return ident.Name == "trace" && sel.Sel.Name == "Error"
+	// §213: MatchIdentPkg for go/types precise matching (both aliases)
+	return (MatchIdentPkg(ident, "trace", "github.com/whatap/go-api/trace") ||
+		MatchIdentPkg(ident, "whataptrace", "github.com/whatap/go-api/trace")) && sel.Sel.Name == "Error"
 }
 
 // isTraceErrorCallWithVar checks if it's a trace.Error call using a specific error variable
