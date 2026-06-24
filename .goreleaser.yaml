@@ -12,10 +12,27 @@ project_name: whatap-go-inst
 # before hooks disabled - go.mod is pre-configured
 
 builds:
-  # 공식 바이너리 (단일 진입점 — 루트 main.go → cmd.Execute)
+  # 공식 바이너리
   - id: whatap-go-inst
-    main: .
+    main: ./cmd/whatap-go-inst
     binary: whatap-go-inst
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - linux
+    goarch:
+      - amd64
+      - arm64
+    ldflags:
+      - -s -w
+      - -X github.com/whatap/go-api-inst/cmd.Version={{.Version}}
+      - -X github.com/whatap/go-api-inst/cmd.GitCommit={{.Commit}}
+      - -X github.com/whatap/go-api-inst/cmd.BuildDate={{.Date}}
+
+  # 단축 바이너리
+  - id: goinst
+    main: ./cmd/goinst
+    binary: goinst
     env:
       - CGO_ENABLED=0
     goos:
@@ -39,6 +56,13 @@ archives:
     files:
       - README.md
       - LICENSE*
+
+  - id: goinst-archive
+    ids:
+      - goinst
+    formats:
+      - tar.gz
+    name_template: "goinst_{{ .Os }}_{{ .Arch }}"
 
 checksum:
   name_template: 'checksums.txt'

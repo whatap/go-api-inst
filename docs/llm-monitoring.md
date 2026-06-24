@@ -96,7 +96,7 @@ Two things matter:
 Manual wrappers need to pull in the nested module explicitly:
 
 ```bash
-go get github.com/whatap/go-api/instrumentation/llm@v0.6.0
+go get github.com/whatap/go-api/instrumentation/llm@v0.6.1
 ```
 
 ### cloudwego Eino

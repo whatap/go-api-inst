@@ -1,5 +1,15 @@
 # Go Auto-Instrumentation Release Notes
 
+## Go auto-instrumentation v0.6.1
+
+June 24, 2026
+
+- [Fixed] `go install` of the CLI restored — `go install github.com/whatap/go-api-inst/cmd/whatap-go-inst@latest` and `go install github.com/whatap/go-api-inst/cmd/goinst@latest` work again. The `cmd/` entry points were unintentionally dropped in v0.6.0; the recommended tarball install (`whatap-go-inst_<os>_<arch>.tar.gz`) was unaffected. The `version` command now also reports the correct version for `go install` builds.
+
+- [Change] Release pipeline pinned — the GitHub Actions release now pins GoReleaser to `~> v2` for reproducible builds (prevents an unattended major-version jump from breaking the release).
+
+---
+
 ## Go auto-instrumentation v0.6.0
 
 June 24, 2026

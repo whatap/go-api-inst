@@ -9,8 +9,11 @@ import (
 )
 
 var (
-	// Default values - overridden by ldflags during goreleaser builds or debug.ReadBuildInfo
-	Version   = "0.5.4"
+	// Default values - overridden by ldflags during goreleaser builds or debug.ReadBuildInfo.
+	// Must stay "dev": the debug.ReadBuildInfo override below only fires when Version == "dev",
+	// so `go install ...@vX` reflects the installed version (and auto-inject pins go-api@vX to
+	// the matching version). A hardcoded number here would freeze all go-install builds at it.
+	Version   = "dev"
 	GitCommit = "unknown"
 	BuildDate = "unknown"
 )

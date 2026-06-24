@@ -34,7 +34,9 @@ jobs:
         uses: goreleaser/goreleaser-action@v6
         with:
           distribution: goreleaser
-          version: latest
+          # ⚠️ 'latest' 금지 — goreleaser major 점프(v1→v2 등)가 .goreleaser.yaml 스키마를
+          # 깨뜨려 릴리즈 실패시킴(v0.6.0 사고). v2.x 안에서만 움직이도록 핀.
+          version: '~> v2'
           args: release --clean
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
