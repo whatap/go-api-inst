@@ -1,36 +1,21 @@
 # GoReleaser 설정
 # 사용법:
 #   로컬 테스트: goreleaser build --snapshot --clean
-#   릴리스: git tag v0.5.0 && git push origin v0.5.0 && goreleaser release --clean
+#   릴리스: git tag v0.6.0 && git push origin v0.6.0 && goreleaser release --clean
 #
 # 참고: https://goreleaser.com/
+
+version: 2
 
 project_name: whatap-go-inst
 
 # before hooks disabled - go.mod is pre-configured
 
 builds:
-  # 공식 바이너리
+  # 공식 바이너리 (단일 진입점 — 루트 main.go → cmd.Execute)
   - id: whatap-go-inst
-    main: ./cmd/whatap-go-inst
+    main: .
     binary: whatap-go-inst
-    env:
-      - CGO_ENABLED=0
-    goos:
-      - linux
-    goarch:
-      - amd64
-      - arm64
-    ldflags:
-      - -s -w
-      - -X github.com/whatap/go-api-inst/cmd.Version={{.Version}}
-      - -X github.com/whatap/go-api-inst/cmd.GitCommit={{.Commit}}
-      - -X github.com/whatap/go-api-inst/cmd.BuildDate={{.Date}}
-
-  # 단축 바이너리
-  - id: goinst
-    main: ./cmd/goinst
-    binary: goinst
     env:
       - CGO_ENABLED=0
     goos:
@@ -46,19 +31,14 @@ builds:
 
 archives:
   - id: whatap-go-inst-archive
-    builds:
+    ids:
       - whatap-go-inst
-    format: tar.gz
+    formats:
+      - tar.gz
     name_template: "{{ .ProjectName }}_{{ .Os }}_{{ .Arch }}"
     files:
       - README.md
       - LICENSE*
-
-  - id: goinst-archive
-    builds:
-      - goinst
-    format: tar.gz
-    name_template: "goinst_{{ .Os }}_{{ .Arch }}"
 
 checksum:
   name_template: 'checksums.txt'
